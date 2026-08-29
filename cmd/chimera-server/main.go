@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"flag"
@@ -28,7 +31,8 @@ func main() {
 	show := flag.Bool("show", false, "show debug output")
 	quicListen := flag.String("quic", "", "QUIC listen address (UDP, defaults to same port as -listen). Leave empty to auto-share port with TCP.")
 	quicPass := flag.String("quic-pass", "", "QUIC auth password")
-	quicObfs := flag.String("quic-obfs", "", "QUIC obfuscation password (optional)")
+	quicDisable := flag.Bool("no-quic", false, "disable the QUIC listener entirely (TCP-only mode)")
+	printFP := flag.Bool("print-quic-fp", false, "print the QUIC cert fingerprint at startup (default: log-only)")
 	flag.Parse()
 
 	if *genkey {
@@ -88,22 +92,30 @@ func main() {
 	}
 	log.Printf("chimera-server listening on %s (SNI: %v, target: %s)", *listen, serverNames, *target)
 
-	if *quicListen == "" && *listen != "" {
-		// Auto-share the same port number for UDP (single-port mode)
-		_, port, _ := net.SplitHostPort(*listen)
-		*quicListen = ":" + port
-	}
-
-	if *quicListen != "" {
-		pass := *quicPass
-		if pass == "" {
-			pass = "chimera-default"
+	if !*quicDisable {
+		if *quicListen == "" && *listen != "" {
+			// Auto-share the same port number for UDP (single-port mode)
+			_, port, _ := net.SplitHostPort(*listen)
+			*quicListen = ":" + port
 		}
-		_, _, err := quicx.ListenServer(context.Background(), *quicListen, pass, *quicObfs)
+		pass := *quicPass
+		if pass == "" && len(shortIds) > 0 {
+			// Derive from the PUBLIC key (base64) + short ID so the client can
+			// compute the identical password from connection info it already has.
+			curve := ecdh.X25519()
+			priv, _ := curve.NewPrivateKey(privKey)
+			pubB64 := base64.RawURLEncoding.EncodeToString(priv.PublicKey().Bytes())
+			pass = deriveQUICPassword(shortIds[0], pubB64)
+		}
+		_, fp, err := quicx.ListenServer(context.Background(), *quicListen, pass)
 		if err != nil {
 			log.Fatalf("quic listen: %v", err)
 		}
 		log.Printf("chimera-server QUIC listening on UDP %s (anti-QoS pipeline active)", *quicListen)
+		log.Printf("chimera-server QUIC cert fingerprint: %s", fp)
+		if *printFP {
+			fmt.Printf("QUIC Fingerprint: %s\n", fp)
+		}
 	}
 
 	for {
@@ -116,6 +128,7 @@ func main() {
 	}
 }
 
+// handleConn handles an authenticated TCP/REALITY connection.
 func handleConn(conn net.Conn) {
 	defer conn.Close()
 
@@ -146,10 +159,29 @@ func handleConn(conn net.Conn) {
 	target, err := net.DialTimeout("tcp", addr.String(), 10*1e9)
 	if err != nil {
 		log.Printf("dial %s: %v", addr, err)
+		// Tell the client the target dial failed so it can surface an error
+		// instead of hanging. Uses the same v2 result-frame shape as QUIC.
+		_ = chimera.WriteSessionResponse(pc, chimera.StatusDialError)
 		return
 	}
 	defer target.Close()
 	log.Printf("connected: %s", addr)
 
+	// v2 protocol: confirm to the client that the target is connected before
+	// streaming. The client now expects this frame after sending CONNECT.
+	if err := chimera.WriteSessionResponse(pc, chimera.StatusOK); err != nil {
+		return
+	}
+
 	chimera.Relay(pc, target)
+}
+
+// deriveQUICPassword derives the QUIC auth password from the REALITY short ID
+// and private key material. Both server and clients can compute the same value
+// from credentials they already share, so no second secret needs configuring.
+func deriveQUICPassword(shortID []byte, privKeyB64 string) string {
+	h := hmac.New(sha256.New, []byte("chimera-quic-key-v2"))
+	h.Write(shortID)
+	h.Write([]byte(privKeyB64))
+	return string(h.Sum(nil))
 }

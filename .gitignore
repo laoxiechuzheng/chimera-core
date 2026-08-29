@@ -1,0 +1,7 @@
+smoke-*.exe
+smoke-server.exe~
+server-*.txt
+client*-*.txt
+client2-*.txt
+client3-*.txt
+*.log

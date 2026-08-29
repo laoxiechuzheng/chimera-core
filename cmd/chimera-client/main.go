@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"flag"
@@ -25,7 +27,7 @@ var (
 	fingerprint = flag.String("fp", "chrome", "uTLS fingerprint")
 	quicMode    = flag.Bool("quic", false, "use QUIC (Mode U) transport")
 	autoMode    = flag.Bool("auto", false, "auto-detect optimal transport (QUIC first, TCP fallback)")
-	quicObfs    = flag.String("quic-obfs", "", "QUIC obfuscation password (optional)")
+	quicPass    = flag.String("quic-pass", "", "QUIC auth password (derived from -sid/-pub when omitted)")
 	quicFP      = flag.String("quic-fp", "", "server QUIC cert sha256 fingerprint (required for -quic)")
 )
 
@@ -45,6 +47,9 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid short ID: %v", err)
 		}
+	}
+	if (*quicMode || *autoMode) && *quicPass == "" && len(shortID) > 0 {
+		*quicPass = deriveQUICPassword(shortID, *pubKeyB64)
 	}
 
 	cfg := &realclient.ClientConfig{
@@ -128,6 +133,16 @@ func chimeraConnect(socks net.Conn, target *chimera.Address, cfg *realclient.Cli
 		return fmt.Errorf("target connect: %w", err)
 	}
 
+	// v2 protocol: wait for the server's dial result before telling SOCKS
+	// the connection is established.
+	status, err = chimera.ReadSessionResponse(pc)
+	if err != nil {
+		return fmt.Errorf("connect result: %w", err)
+	}
+	if status != chimera.StatusOK {
+		return fmt.Errorf("server dial failed: status %d", status)
+	}
+
 	if err := socks5Reply(socks, 0x00); err != nil {
 		return err
 	}
@@ -138,7 +153,7 @@ func chimeraConnect(socks net.Conn, target *chimera.Address, cfg *realclient.Cli
 
 func chimeraConnectQuic(socks net.Conn, target *chimera.Address) error {
 	ctx := context.Background()
-	qc, err := quicx.DialClient(ctx, *serverAddr, "chimera-default", *quicObfs, *quicFP)
+	qc, err := quicx.DialClient(ctx, *serverAddr, *quicPass, *quicFP)
 	if err != nil {
 		return fmt.Errorf("quic dial: %w", err)
 	}
@@ -174,6 +189,15 @@ func decodeHex(s string) ([]byte, error) {
 		out = append(out, b)
 	}
 	return out, nil
+}
+
+// deriveQUICPassword mirrors the server-side derivation so client and server
+// agree on the QUIC auth password without a second manual secret.
+func deriveQUICPassword(shortID []byte, pubKeyB64 string) string {
+	mac := hmac.New(sha256.New, []byte("chimera-quic-key-v2"))
+	mac.Write(shortID)
+	mac.Write([]byte(pubKeyB64))
+	return string(mac.Sum(nil))
 }
 
 // --- minimal SOCKS5 ---

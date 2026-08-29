@@ -20,6 +20,7 @@ const (
 
 	StatusOK              = 0x00
 	StatusVersionMismatch = 0x01
+	StatusDialError       = 0x02
 
 	CmdConnect = 0x01
 	CmdUDP     = 0x03
@@ -97,6 +98,8 @@ func (a *Address) String() string {
 	switch a.Type {
 	case AtypDomain:
 		return fmt.Sprintf("%s:%d", a.Domain, a.Port)
+	case AtypIPv6:
+		return fmt.Sprintf("[%s]:%d", a.IP.String(), a.Port)
 	default:
 		return fmt.Sprintf("%s:%d", a.IP.String(), a.Port)
 	}
@@ -109,6 +112,12 @@ func WriteAddress(w io.Writer, addr *Address) error {
 		buf = append(buf, AtypIPv4)
 		buf = append(buf, addr.IP.To4()...)
 	case AtypDomain:
+		if len(addr.Domain) == 0 {
+			return errors.New("chimera: empty domain")
+		}
+		if len(addr.Domain) > 255 {
+			return errors.New("chimera: domain too long")
+		}
 		buf = append(buf, AtypDomain)
 		buf = append(buf, byte(len(addr.Domain)))
 		buf = append(buf, addr.Domain...)
@@ -142,6 +151,9 @@ func ReadAddress(r io.Reader) (*Address, error) {
 		var lenBuf [1]byte
 		if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
 			return nil, err
+		}
+		if lenBuf[0] == 0 {
+			return nil, errors.New("chimera: empty domain")
 		}
 		domain := make([]byte, lenBuf[0])
 		if _, err := io.ReadFull(r, domain); err != nil {

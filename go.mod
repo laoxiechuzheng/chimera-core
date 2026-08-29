@@ -1,15 +1,15 @@
 module github.com/chimera-proxy/chimera-core
 
-go 1.25.0
+go 1.24.0
+
+toolchain go1.24.5
 
 require (
 	github.com/quic-go/quic-go v0.44.0
 	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af
 	github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f
-	golang.org/x/crypto v0.54.0
+	golang.org/x/crypto v0.48.0
 )
-
-replace github.com/xtls/reality => ../reality-lib
 
 require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
@@ -24,7 +24,7 @@ require (
 	go.uber.org/mock v0.4.0 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
 	golang.org/x/mod v0.17.0 // indirect
-	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/net v0.49.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/tools v0.21.0 // indirect
 )

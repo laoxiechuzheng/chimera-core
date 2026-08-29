@@ -58,6 +58,7 @@ echo "=== Chimera installer for Debian 12 ==="
 echo "Port: $PORT  SNI: $SNI"
 
 systemctl stop chimera 2>/dev/null || true
+umask 077
 
 mkdir -p "$CHIMERA_DIR"
 cd "$CHIMERA_DIR"
@@ -71,6 +72,7 @@ if [ -f keys.env ]; then
   echo "[2/4] Reusing existing keys from keys.env..."
   # shellcheck disable=SC1091
   . ./keys.env
+  chmod 600 keys.env
 else
   echo "[2/4] Generating keys..."
   KEYS=$(./chimera-server -genkey)
@@ -82,6 +84,7 @@ PRIV="$PRIV"
 PUB="$PUB"
 SID="$SID"
 EOF
+  chmod 600 keys.env
 fi
 
 echo "[3/4] Creating systemd service..."
@@ -91,10 +94,15 @@ Description=Chimera Proxy Server
 After=network.target
 
 [Service]
-ExecStart=$CHIMERA_DIR/chimera-server -listen :$PORT -target $SNI:443 -sni $SNI -key $PRIV -sid $SID -quic-pass $SID
+EnvironmentFile=$CHIMERA_DIR/keys.env
+ExecStart=$CHIMERA_DIR/chimera-server -listen :$PORT -target $SNI:443 -sni $SNI -key `$PRIV -sid `$SID
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

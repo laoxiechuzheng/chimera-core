@@ -12,13 +12,16 @@ Non-interactive install with a custom port and SNI:
 Upgrades reuse /opt/chimera/keys.env, so existing client keys remain valid.
 
 Releases: https://github.com/laoxiechuzheng/chimera-core/releases
-Native mihomo kernel: https://github.com/laoxiechuzheng/mihomo/releases/tag/v1.19-chimera
+Native mihomo kernel: https://github.com/laoxiechuzheng/mihomo/releases/tag/v1.19-chimera.3
 
 Chimera is a hybrid proxy protocol combining:
 - REALITY handshake (SNI whitelist + borrowed real-site cert, active-probing resistant)
-- AnyTLS-style session padding (traffic-analysis resistant)
-- Vision-style raw payload relay (no TLS-in-TLS signature)
-- TUIC/Hysteria2-style QUIC fast path
+- Session padding (AnyTLS-inspired, reduced-strength traffic-analysis resistance)
+- Application bytes relayed unmodified inside the REALITY TLS session.
+  NOTE: if the proxied app itself uses TLS, TLS-in-TLS signatures remain
+  possible - this is NOT a Vision replacement.
+- QUIC fast path v2: HMAC-SHA256 auth with random nonce + replay cache,
+  mandatory certificate fingerprint pinning, dial-result confirmation
 
 Full spec: chimera-spec.md
 
@@ -37,11 +40,13 @@ Outputs Private Key (server), Public Key (client), Short ID (both).
 
 ## Server Start
 
-    chimera-server -listen :8443 -target www.cloudflare.com:443 -sni www.cloudflare.com -key PRIVATE_KEY -sid SHORT_ID -quic :8445 -quic-pass PASSWORD
+    chimera-server -listen :8443 -target www.cloudflare.com:443 -sni www.cloudflare.com -key PRIVATE_KEY -sid SHORT_ID
 
 - target: borrowed real site (prefer TLS1.3+H2, short cert chain, IP close to server)
 - sni: whitelist; client SNI must be in this list
-- quic/quic-pass: optional QUIC fast mode over UDP
+- QUIC shares the same UDP port automatically; the auth password is derived
+  from the public key + short ID on both sides (no extra config)
+- use -no-quic for TCP-only mode (no UDP listener)
 
 NOTE: avoid targets whose TLS handshake exceeds 8KB (e.g. www.microsoft.com) with upstream
 REALITY lib. Our fork raised the limit to 64KB but short-chain sites are still recommended.
@@ -53,23 +58,28 @@ Good targets: www.cloudflare.com, www.bing.com, dl.google.com.
 
 ## Client Start (QUIC speed mode, needs server -quic)
 
-    chimera-client -socks :1085 -server SERVER_IP:8445 -sni www.cloudflare.com -pub PUBLIC_KEY -sid SHORT_ID -quic
+The server prints its QUIC cert fingerprint at startup; pass it via -quic-fp
+(mandatory - the client refuses QUIC without pinning):
 
-Optional: -quic-obfs PASSWORD for length-preserving UDP obfuscation.
+    chimera-client -socks :1080 -server SERVER_IP:8443 -sni www.cloudflare.com -pub PUBLIC_KEY -sid SHORT_ID -quic -quic-fp FINGERPRINT
+
+The QUIC auth password is derived automatically from -sid/-pub. Both TCP and
+QUIC clients now wait for a dial-confirmation frame, so a SOCKS5 success reply
+means the target is actually connected.
 
 ## mihomo Integration
 
-Run chimera-client locally (SOCKS5), then in mihomo:
+Use the native outbound directly (v1.19-chimera.3+ kernels):
 
     proxies:
-      - name: chimera-tcp
-        type: socks5
-        server: 127.0.0.1
-        port: 1080
-      - name: chimera-quic
-        type: socks5
-        server: 127.0.0.1
-        port: 1085
+      - name: chimera
+        type: chimera
+        server: SERVER_IP
+        port: 8443
+        sni: www.cloudflare.com
+        public-key: PUBLIC_KEY
+        short-id: SHORT_ID
+        client-fingerprint: chrome
 
 Both modes verified working end-to-end. Our client's REALITY handshake also completes
 against reference Xray-core VLESS+REALITY inbound (protocol-compatible with REALITY spec).
@@ -79,12 +89,12 @@ against reference Xray-core VLESS+REALITY inbound (protocol-compatible with REAL
 1. Non-whitelisted SNI transparently falls back to the real site
 2. Certificate chain is the real target's - no cert-chain attack possible
 3. Session-level random padding breaks payload-length signatures
-4. Raw payload relay (no TLS-in-TLS signature)
-5. QUIC mode: cert fingerprint pinning + optional length-preserving obfuscation
-6. Per-stream HMAC token auth (QUIC mode)
+4. QUIC v2: per-stream random nonce + HMAC auth, replay cache, pinned certs
+5. QUIC has no default password; credentials derive from REALITY keys on both sides
 
 ## Known Limitations
 
 - No UDP associate in TCP mode yet (planned for QUIC mode)
 - No stream multiplexing yet (one connection per request; smux planned)
-- QUIC obfuscation uses fixed-nonce keystream (obfuscation only; security from QUIC layer)
+- TCP mode remains detectable as TLS-in-TLS when the proxied app uses TLS
+- QUIC mode has no extra obfuscation layer yet (WG-style framing planned)

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -22,7 +21,7 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-const quicALPN = "chimera-quic/1"
+const quicALPN = "chimera-quic/2"
 
 func generateCert() (tls.Certificate, string, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -45,12 +44,19 @@ func generateCert() (tls.Certificate, string, error) {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, hex.EncodeToString(sum[:]), nil
 }
 
+// Server accepts QUIC connections authenticated with the Chimera v2 auth
+// frame. password is mandatory; ListenServer refuses an empty one so the
+// open-proxy failure mode of v0.x can never return.
 type Server struct {
 	listener *quic.Listener
-	Password string
+	password string
+	replay   *chimera.ReplayCache
 }
 
-func ListenServer(ctx context.Context, listenAddr, password, obfsPassword string) (*Server, string, error) {
+func ListenServer(ctx context.Context, listenAddr, password string) (*Server, string, error) {
+	if password == "" {
+		return nil, "", errors.New("quicx: refusing to listen without a password (open proxy guard)")
+	}
 	cert, fingerprint, err := generateCert()
 	if err != nil {
 		return nil, "", err
@@ -63,14 +69,15 @@ func ListenServer(ctx context.Context, listenAddr, password, obfsPassword string
 	if err != nil {
 		return nil, "", err
 	}
-	if obfsPassword != "" {
-		_ = obfsPassword // anti-QoS at stream level
-	}
 	listener, err := quic.Listen(pc, tlsConf, &quic.Config{MaxIdleTimeout: 120 * time.Second})
 	if err != nil {
 		return nil, "", err
 	}
-	s := &Server{listener: listener, Password: password}
+	s := &Server{
+		listener: listener,
+		password: password,
+		replay:   chimera.NewReplayCache(10 * time.Minute),
+	}
 	go s.acceptLoop(ctx)
 	return s, fingerprint, nil
 }
@@ -99,33 +106,28 @@ func (s *Server) handleConn(ctx context.Context, conn quic.Connection) {
 func (s *Server) handleStream(ctx context.Context, stream quic.Stream) {
 	defer stream.Close()
 
-	var head [1]byte
-	if _, err := io.ReadFull(stream, head[:]); err != nil {
-		return
-	}
-	var tokLen [1]byte
-	if _, err := io.ReadFull(stream, tokLen[:]); err != nil {
-		return
-	}
-	tok := make([]byte, tokLen[0])
-	if _, err := io.ReadFull(stream, tok); err != nil {
-		return
-	}
-	if !verifyToken(tok, s.Password) {
-		return
-	}
-	addr, err := chimera.ReadAddress(stream)
+	// Auth deadline: unauthenticated streams get at most 10s.
+	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
+	cmd, addr, err := readAuthedConnect(stream, s.password, s.replay)
 	if err != nil {
 		return
 	}
-	if head[0] != chimera.CmdConnect {
+	stream.SetReadDeadline(time.Time{})
+	if cmd != chimera.CmdConnect {
 		return
 	}
-	target, err := net.DialTimeout("tcp", addr.String(), 10*time.Second)
+
+	dialer := net.Dialer{}
+	target, err := dialer.DialContext(ctx, "tcp", addr.String())
 	if err != nil {
+		// v2 protocol: tell the client the dial failed instead of hanging.
+		_ = chimera.WriteQUICResult(stream, chimera.QUICStatusDialError)
 		return
 	}
 	defer target.Close()
+	if err := chimera.WriteQUICResult(stream, chimera.QUICStatusOK); err != nil {
+		return
+	}
 
 	done := make(chan struct{}, 2)
 	go func() { io.Copy(target, stream); done <- struct{}{} }()
@@ -135,95 +137,76 @@ func (s *Server) handleStream(ctx context.Context, stream quic.Stream) {
 	<-done
 }
 
-func token(password string) []byte {
-	mac := hmac.New(sha256.New, []byte(password))
-	mac.Write([]byte("chimera-connect"))
-	return mac.Sum(nil)
-}
-
-func verifyToken(tok []byte, password string) bool {
-	mac := hmac.New(sha256.New, []byte(password))
-	mac.Write([]byte("chimera-connect"))
-	return hmac.Equal(mac.Sum(nil), tok)
+// readAuthedConnect delegates to the shared chimera v2 parser.
+func readAuthedConnect(r io.Reader, password string, replay *chimera.ReplayCache) (byte, *chimera.Address, error) {
+	return chimera.ReadQUICConnectWithCache(r, password, replay)
 }
 
 type Client struct {
-	Conn     quic.Connection
+	Conn     quic.EarlyConnection
 	password string
 }
 
-func DialClient(ctx context.Context, serverAddr, password, obfsPassword, certFingerprint string) (*Client, error) {
-	var fp []byte
-	if certFingerprint != "" {
-		var err error
-		fp, err = hex.DecodeString(certFingerprint)
-		if err != nil || len(fp) != 32 {
-			return nil, errors.New("quicx: invalid fingerprint")
-		}
+// DialClient requires both the derived password and the server certificate
+// fingerprint. Without a fingerprint the connection is refused — this closes
+// the InsecureSkipVerify hole from v0.x.
+func DialClient(ctx context.Context, serverAddr, password, certFingerprint string) (*Client, error) {
+	if password == "" {
+		return nil, errors.New("quicx: empty auth password")
 	}
-		tlsConf := &tls.Config{
-			InsecureSkipVerify: true,
-			NextProtos:         []string{quicALPN},
-		}
-		if len(fp) == 32 {
-			tlsConf.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-				if len(rawCerts) == 0 {
-					return errors.New("quicx: no certs")
-				}
-				sum := sha256.Sum256(rawCerts[0])
-				if !bytes.Equal(sum[:], fp) {
-					return errors.New("quicx: cert fingerprint mismatch")
-				}
-				return nil
+	if certFingerprint == "" {
+		return nil, errors.New("quicx: certificate fingerprint required (anti-MITM)")
+	}
+	fp, err := hex.DecodeString(certFingerprint)
+	if err != nil || len(fp) != 32 {
+		return nil, errors.New("quicx: invalid fingerprint")
+	}
+	tlsConf := &tls.Config{
+		InsecureSkipVerify: true, // we pin by fingerprint below instead of CA
+		NextProtos:         []string{quicALPN},
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return errors.New("quicx: no certs")
 			}
-		}
-	var pc net.PacketConn
-	var pcAddr net.Addr
-	if obfsPassword != "" {
-		var err error
-		pc, err = net.ListenPacket("udp", "")
-		if err != nil {
-			return nil, err
-		}
-		_ = obfsPassword // anti-QoS at stream level
-		udpAddr, err2 := net.ResolveUDPAddr("udp", serverAddr)
-		if err2 != nil {
-			return nil, err2
-		}
-		pcAddr = udpAddr
-		conn, err := quic.Dial(ctx, pc, pcAddr, tlsConf, &quic.Config{MaxIdleTimeout: 120 * time.Second})
-		if err != nil {
-			return nil, err
-		}
-		return &Client{Conn: conn, password: password}, nil
+			sum := sha256.Sum256(rawCerts[0])
+			if !bytes.Equal(sum[:], fp) {
+				return errors.New("quicx: cert fingerprint mismatch")
+			}
+			return nil
+		},
 	}
-	_ = obfsPassword // anti-QoS at stream level
-	conn, err := quic.DialAddr(ctx, serverAddr, tlsConf, &quic.Config{MaxIdleTimeout: 120 * time.Second})
+	conn, err := quic.DialAddrEarly(ctx, serverAddr, tlsConf, &quic.Config{MaxIdleTimeout: 120 * time.Second})
 	if err != nil {
 		return nil, err
 	}
 	return &Client{Conn: conn, password: password}, nil
 }
 
+// DialTCP opens a stream, sends the authed connect frame, and waits for the
+// server's dial-result before returning. A nil error means the server has
+// actually connected to the target.
 func (c *Client) DialTCP(ctx context.Context, addr *chimera.Address) (quic.Stream, error) {
 	stream, err := c.Conn.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, err
 	}
-	tok := token(c.password)
-	buf := []byte{chimera.CmdConnect, byte(len(tok))}
-	buf = append(buf, tok...)
-	var addrBuf bytes.Buffer
-	if err := chimera.WriteAddress(&addrBuf, addr); err != nil {
+	stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := chimera.WriteQUICConnect(stream, chimera.CmdConnect, c.password, addr); err != nil {
 		stream.Close()
 		return nil, err
 	}
-	buf = append(buf, addrBuf.Bytes()...)
-	if _, err := stream.Write(buf); err != nil {
+	stream.SetWriteDeadline(time.Time{})
+
+	stream.SetReadDeadline(time.Now().Add(15 * time.Second))
+	status, err := chimera.ReadQUICResult(stream)
+	stream.SetReadDeadline(time.Time{})
+	if err != nil {
 		stream.Close()
 		return nil, err
+	}
+	if status != chimera.QUICStatusOK {
+		stream.Close()
+		return nil, errors.New("quicx: server dial failed")
 	}
 	return stream, nil
 }
-
-

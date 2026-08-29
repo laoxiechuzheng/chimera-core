@@ -132,6 +132,11 @@ func (c *Conn) maybeKeepAlive() {
 	if shouldKeepAlive(c.policy.KeepAliveChance) {
 		c.writeMu.Lock()
 		defer c.writeMu.Unlock()
+		if c.framesSent == 0 {
+			// Never inject keep-alive noise before the first real frame: the
+			// session-header/connect phase is timing sensitive.
+			return
+		}
 		padLen := randInt(c.policy.MaxPadding)
 		header := make([]byte, 5)
 		header[0] = FramePaddingOnly
@@ -148,6 +153,15 @@ func (c *Conn) maybeKeepAlive() {
 
 func (c *Conn) Read(b []byte) (int, error) {
 	for {
+		// Hook the keep-alive dice roll into the read path: when idle (no
+		// buffered payload) there is a small chance we emit a padding-only
+		// frame before blocking on the next header. This makes the 20%
+		// keep-alive policy in DefaultPolicy actually do something: the
+		// traffic pattern gains random small upstream frames instead of
+		// strictly request-shaped bursts.
+		if c.readStage == 0 && len(c.readBuf) == 0 && c.readPayloadLen == 0 && c.readPadLen == 0 {
+			c.maybeKeepAlive()
+		}
 		if len(c.readBuf) > 0 {
 			n := copy(b, c.readBuf)
 			c.readBuf = c.readBuf[n:]
