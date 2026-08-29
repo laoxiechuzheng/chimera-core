@@ -1,4 +1,7 @@
 smoke-*.exe
+chimera-server-v3-*
+chimera-client-v3-*
+chimera-e2e-server.exe
 smoke-server.exe~
 server-*.txt
 client*-*.txt
