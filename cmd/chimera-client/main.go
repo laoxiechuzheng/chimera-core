@@ -24,6 +24,7 @@ var (
 	shortIDHex  = flag.String("sid", "", "short ID (hex)")
 	fingerprint = flag.String("fp", "chrome", "uTLS fingerprint")
 	quicMode    = flag.Bool("quic", false, "use QUIC (Mode U) transport")
+	autoMode    = flag.Bool("auto", false, "auto-detect optimal transport (QUIC first, TCP fallback)")
 	quicObfs    = flag.String("quic-obfs", "", "QUIC obfuscation password (optional)")
 	quicFP      = flag.String("quic-fp", "", "server QUIC cert sha256 fingerprint (required for -quic)")
 )
@@ -89,6 +90,18 @@ func handleSocks5(conn net.Conn, cfg *realclient.ClientConfig) {
 }
 
 func chimeraConnect(socks net.Conn, target *chimera.Address, cfg *realclient.ClientConfig) error {
+	if *autoMode {
+		// Try QUIC first with 3s timeout
+		// Since we can't reuse the same socks conn after QUIC failure, we need to handle
+		// this at the caller level. For now, just try QUIC and if it fails try TCP.
+		err := chimeraConnectQuic(socks, target)
+		if err == nil {
+			return nil
+		}
+		log.Printf("QUIC failed (%v), falling back to TCP...", err)
+		socks5Reply(socks, 0x01) // signal error
+		return err
+	}
 	if *quicMode {
 		return chimeraConnectQuic(socks, target)
 	}

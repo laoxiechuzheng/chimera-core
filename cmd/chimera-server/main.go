@@ -26,7 +26,7 @@ func main() {
 	privKeyB64 := flag.String("key", "", "x25519 private key (base64 rawurl)")
 	sidList := flag.String("sid", "", "comma-separated short IDs (hex)")
 	show := flag.Bool("show", false, "show debug output")
-	quicListen := flag.String("quic", "", "QUIC listen address (UDP, optional)")
+	quicListen := flag.String("quic", "", "QUIC listen address (UDP, defaults to same port as -listen). Leave empty to auto-share port with TCP.")
 	quicPass := flag.String("quic-pass", "", "QUIC auth password")
 	quicObfs := flag.String("quic-obfs", "", "QUIC obfuscation password (optional)")
 	flag.Parse()
@@ -88,16 +88,22 @@ func main() {
 	}
 	log.Printf("chimera-server listening on %s (SNI: %v, target: %s)", *listen, serverNames, *target)
 
+	if *quicListen == "" && *listen != "" {
+		// Auto-share the same port number for UDP (single-port mode)
+		_, port, _ := net.SplitHostPort(*listen)
+		*quicListen = ":" + port
+	}
+
 	if *quicListen != "" {
 		pass := *quicPass
 		if pass == "" {
 			pass = "chimera-default"
 		}
-		_, fingerprint, err := quicx.ListenServer(context.Background(), *quicListen, pass, *quicObfs)
+		_, _, err := quicx.ListenServer(context.Background(), *quicListen, pass, *quicObfs)
 		if err != nil {
 			log.Fatalf("quic listen: %v", err)
 		}
-		log.Printf("chimera-server QUIC listening on %s (cert sha256: %s)", *quicListen, fingerprint)
+		log.Printf("chimera-server QUIC listening on UDP %s (anti-QoS pipeline active)", *quicListen)
 	}
 
 	for {

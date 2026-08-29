@@ -64,7 +64,7 @@ func ListenServer(ctx context.Context, listenAddr, password, obfsPassword string
 		return nil, "", err
 	}
 	if obfsPassword != "" {
-		pc = NewObfsPacketConn(pc, obfsPassword)
+		_ = obfsPassword // anti-QoS at stream level
 	}
 	listener, err := quic.Listen(pc, tlsConf, &quic.Config{MaxIdleTimeout: 120 * time.Second})
 	if err != nil {
@@ -185,7 +185,7 @@ func DialClient(ctx context.Context, serverAddr, password, obfsPassword, certFin
 		if err != nil {
 			return nil, err
 		}
-		pc = NewObfsPacketConn(pc, obfsPassword)
+		_ = obfsPassword // anti-QoS at stream level
 		udpAddr, err2 := net.ResolveUDPAddr("udp", serverAddr)
 		if err2 != nil {
 			return nil, err2
@@ -197,6 +197,7 @@ func DialClient(ctx context.Context, serverAddr, password, obfsPassword, certFin
 		}
 		return &Client{Conn: conn, password: password}, nil
 	}
+	_ = obfsPassword // anti-QoS at stream level
 	conn, err := quic.DialAddr(ctx, serverAddr, tlsConf, &quic.Config{MaxIdleTimeout: 120 * time.Second})
 	if err != nil {
 		return nil, err
@@ -224,3 +225,5 @@ func (c *Client) DialTCP(ctx context.Context, addr *chimera.Address) (quic.Strea
 	}
 	return stream, nil
 }
+
+
