@@ -29,7 +29,7 @@ Description=Chimera Proxy Server
 After=network.target
 
 [Service]
-ExecStart=$CHIMERA_DIR/chimera-server -listen :8443 -target www.cloudflare.com:443 -sni www.cloudflare.com -key $PRIV -sid $SID -quic :8445 -quic-pass $SID
+ExecStart=$CHIMERA_DIR/chimera-server -listen :8443 -target www.cloudflare.com:443 -sni www.cloudflare.com -key $PRIV -sid $SID -quic-pass $SID
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
@@ -45,10 +45,9 @@ echo "[4/4] Done. Connection info below - SAVE THIS:"
 echo ""
 echo "  Server IP:  (your VPS public IP)"
 echo "  TCP port:   8443"
-echo "  QUIC port:  8445"
+echo "  QUIC port:  8443 (same port, auto-detect)"
 echo "  SNI:        www.cloudflare.com"
 echo "  Public Key: $PUB"
 echo "  Short ID:   $SID"
-echo "  QUIC pass:  $SID"
 echo ""
-echo "Open firewall ports if needed: ufw allow 8443/tcp 8443/udp 8445/udp"
+echo "Open firewall ports if needed: ufw allow 8443/tcp && ufw allow 8443/udp"
