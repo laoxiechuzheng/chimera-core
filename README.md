@@ -1,5 +1,12 @@
 # Chimera Protocol
 
+Debian 12 one-command server install:
+
+    bash <(curl -fsSL https://raw.githubusercontent.com/laoxiechuzheng/chimera-core/main/install.sh)
+
+Releases: https://github.com/laoxiechuzheng/chimera-core/releases
+Native mihomo kernel: https://github.com/laoxiechuzheng/mihomo/releases/tag/v1.19-chimera
+
 Chimera is a hybrid proxy protocol combining:
 - REALITY handshake (SNI whitelist + borrowed real-site cert, active-probing resistant)
 - AnyTLS-style session padding (traffic-analysis resistant)
