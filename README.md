@@ -1,8 +1,15 @@
 # Chimera Protocol
 
-Debian 12 one-command server install:
+Debian 12 one-command server install. Interactive mode asks for the port and SNI;
+press Enter to accept the defaults:
 
     bash <(curl -fsSL https://raw.githubusercontent.com/laoxiechuzheng/chimera-core/main/install.sh)
+
+Non-interactive install with a custom port and SNI:
+
+    bash <(curl -fsSL https://raw.githubusercontent.com/laoxiechuzheng/chimera-core/main/install.sh) --port 9443 --sni www.bing.com
+
+Upgrades reuse /opt/chimera/keys.env, so existing client keys remain valid.
 
 Releases: https://github.com/laoxiechuzheng/chimera-core/releases
 Native mihomo kernel: https://github.com/laoxiechuzheng/mihomo/releases/tag/v1.19-chimera
