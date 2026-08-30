@@ -54,13 +54,19 @@ func NewLimiter(cfg LimitConfig) *Limiter {
 	}
 }
 
-func (l *Limiter) Allow(remoteAddr string, _ bool) (func(), bool) {
+func (l *Limiter) Allow(remoteAddr string, authenticated bool) (func(), bool) {
 	select {
 	case l.sem <- struct{}{}:
 	default:
 		return nil, false
 	}
-	releaseSemaphore := func() { <-l.sem }
+	var once sync.Once
+	releaseSemaphore := func() {
+		once.Do(func() { <-l.sem })
+	}
+	if authenticated {
+		return releaseSemaphore, true
+	}
 	now := l.now()
 	ip := remoteIP(remoteAddr)
 	l.mu.Lock()
@@ -88,11 +94,7 @@ func (l *Limiter) Allow(remoteAddr string, _ bool) (func(), bool) {
 	}
 	state.tokens--
 	l.mu.Unlock()
-
-	var once sync.Once
-	return func() {
-		once.Do(releaseSemaphore)
-	}, true
+	return releaseSemaphore, true
 }
 
 func (l *Limiter) trackedIPs() int {

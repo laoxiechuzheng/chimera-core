@@ -180,6 +180,40 @@ func TestRateLimitReturnsSmallResponseWithoutOriginFetch(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedConnectsBypassUnauthenticatedPerIPBurst(t *testing.T) {
+	var dialCalls atomic.Int32
+	cfg := testServerConfig(t)
+	cfg.Limits = LimitConfig{MaxConcurrent: 4, PerIPBurst: 1, PerIPWindow: time.Minute, MaxTrackedIPs: 4}
+	cfg.Network = NetworkHooks{
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("1.1.1.1")}, nil
+		},
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialCalls.Add(1)
+			clientSide, serverSide := net.Pipe()
+			go func() {
+				defer serverSide.Close()
+				_, _ = io.Copy(serverSide, serverSide)
+			}()
+			return clientSide, nil
+		},
+	}
+	_, info := startTestServerWithConfig(t, cfg)
+	client := newTestClient(t, info)
+	for i := 0; i < 2; i++ {
+		conn, err := client.DialTCP(context.Background(), &chimera.Address{Type: chimera.AtypDomain, Domain: "echo.test", Port: 443})
+		if err != nil {
+			t.Fatalf("authenticated CONNECT %d failed: %v", i+1, err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := dialCalls.Load(); got != 2 {
+		t.Fatalf("target dials = %d, want 2", got)
+	}
+}
+
 func startTestServer(t *testing.T) (*Server, ServerInfo) {
 	t.Helper()
 	return startTestServerWithDecoyFetcher(t, func(context.Context, string) (DecoySnapshot, error) {

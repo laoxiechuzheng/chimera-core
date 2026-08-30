@@ -35,6 +35,11 @@ func loadServerCertificate(cfg ServerConfig, now time.Time) (tls.Certificate, st
 	return loadOrCreateCertificate(cfg.CertificatePath, cfg.ServerName, now)
 }
 
+func EnsureCertificate(path, serverName string) (string, error) {
+	_, fingerprint, err := loadOrCreateCertificate(path, serverName, time.Now())
+	return fingerprint, err
+}
+
 func loadOrCreateCertificate(path, serverName string, now time.Time) (tls.Certificate, string, error) {
 	path = strings.TrimSpace(path)
 	serverName = strings.TrimSpace(serverName)

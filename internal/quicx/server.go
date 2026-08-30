@@ -7,8 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -135,7 +133,8 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	release, ok := s.limiter.Allow(r.RemoteAddr, false)
+	authenticated := r.Method == http.MethodConnect && s.auth.Validate(r.Header.Get("Authorization"), r.Method, r.Host, s.serverName, s.now())
+	release, ok := s.limiter.Allow(r.RemoteAddr, authenticated)
 	if !ok {
 		writeRateLimited(w)
 		return
@@ -145,11 +144,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.decoy.ServeHTTP(w, r)
 		return
 	}
-	if !s.auth.Validate(r.Header.Get("Authorization"), r.Method, r.Host, s.serverName, s.now()) {
+	if !authenticated {
 		s.serveUnauthenticated(w, r)
 		return
 	}
-	validatedTarget, err := resolveAndValidateAuthority(r.Context(), r.Host, s.network)
+	validatedTarget, err := chimera.ResolveAndValidateAuthority(r.Context(), r.Host, s.network.LookupIP)
 	if err != nil {
 		writeConnectFailure(w)
 		return
@@ -201,7 +200,7 @@ func guardedHTTPClient(network NetworkHooks, timeout time.Duration) *http.Client
 	transport := &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, dialNetwork, authority string) (net.Conn, error) {
-			validated, err := resolveAndValidateAuthority(ctx, authority, network)
+			validated, err := chimera.ResolveAndValidateAuthority(ctx, authority, network.LookupIP)
 			if err != nil {
 				return nil, err
 			}
@@ -216,32 +215,6 @@ func guardedHTTPClient(network NetworkHooks, timeout time.Duration) *http.Client
 			return http.ErrUseLastResponse
 		},
 	}
-}
-
-func resolveAndValidateAuthority(ctx context.Context, authority string, network NetworkHooks) (string, error) {
-	host, portText, err := net.SplitHostPort(strings.TrimSpace(authority))
-	if err != nil || host == "" {
-		return "", errors.New("quicx: invalid CONNECT authority")
-	}
-	port, err := strconv.ParseUint(portText, 10, 16)
-	if err != nil || port == 0 {
-		return "", errors.New("quicx: invalid CONNECT port")
-	}
-	var ips []net.IP
-	if ip := net.ParseIP(host); ip != nil {
-		ips = []net.IP{ip}
-	} else {
-		ips, err = network.LookupIP(ctx, host)
-		if err != nil || len(ips) == 0 {
-			return "", errors.New("quicx: target resolution failed")
-		}
-	}
-	for _, ip := range ips {
-		if chimera.IsForbiddenIP(ip) {
-			return "", errors.New("quicx: forbidden target address")
-		}
-	}
-	return net.JoinHostPort(ips[0].String(), strconv.FormatUint(port, 10)), nil
 }
 
 func writeConnectFailure(w http.ResponseWriter) {

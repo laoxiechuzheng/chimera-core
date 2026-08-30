@@ -44,6 +44,17 @@ func TestLimiterEnforcesPerIPBurstAndRefill(t *testing.T) {
 	release()
 }
 
+func TestLimiterDoesNotApplyProbeBurstToAuthenticatedRequests(t *testing.T) {
+	l := NewLimiter(LimitConfig{MaxConcurrent: 2, PerIPBurst: 1, PerIPWindow: time.Minute, MaxTrackedIPs: 4})
+	for i := 0; i < 2; i++ {
+		release, ok := l.Allow("192.0.2.1:1000", true)
+		if !ok {
+			t.Fatalf("authenticated request %d rejected by probe burst limit", i+1)
+		}
+		release()
+	}
+}
+
 func TestLimiterTrackedIPMapHasHardBound(t *testing.T) {
 	now := time.Unix(1_788_000_000, 0)
 	l := NewLimiter(LimitConfig{MaxConcurrent: 4, PerIPBurst: 1, PerIPWindow: time.Minute, MaxTrackedIPs: 2})

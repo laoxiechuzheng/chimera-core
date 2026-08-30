@@ -1,8 +1,12 @@
 package chimera
 
 import (
+	"context"
+	"errors"
 	"net"
 	"net/netip"
+	"strconv"
+	"strings"
 )
 
 var forbiddenPrefixes = []netip.Prefix{
@@ -60,4 +64,37 @@ func IsForbiddenIP(ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+type LookupIPFunc func(context.Context, string) ([]net.IP, error)
+
+func ResolveAndValidateAuthority(ctx context.Context, authority string, lookup LookupIPFunc) (string, error) {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(authority))
+	if err != nil || host == "" {
+		return "", errors.New("chimera: invalid target authority")
+	}
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 {
+		return "", errors.New("chimera: invalid target port")
+	}
+	var ips []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		if lookup == nil {
+			lookup = func(ctx context.Context, host string) ([]net.IP, error) {
+				return net.DefaultResolver.LookupIP(ctx, "ip", host)
+			}
+		}
+		ips, err = lookup(ctx, host)
+		if err != nil || len(ips) == 0 {
+			return "", errors.New("chimera: target resolution failed")
+		}
+	}
+	for _, ip := range ips {
+		if IsForbiddenIP(ip) {
+			return "", errors.New("chimera: forbidden target address")
+		}
+	}
+	return net.JoinHostPort(ips[0].String(), strconv.FormatUint(port, 10)), nil
 }
