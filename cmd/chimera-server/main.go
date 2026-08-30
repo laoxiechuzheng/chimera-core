@@ -107,7 +107,7 @@ func main() {
 			pubB64 := base64.RawURLEncoding.EncodeToString(priv.PublicKey().Bytes())
 			pass = deriveQUICPassword(shortIds[0], pubB64)
 		}
-		_, fp, err := quicx.ListenServer(context.Background(), *quicListen, pass)
+		_, fp, err := quicx.ListenServer(context.Background(), *quicListen, pass, *target)
 		if err != nil {
 			log.Fatalf("quic listen: %v", err)
 		}

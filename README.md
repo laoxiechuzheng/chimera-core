@@ -22,6 +22,8 @@ Chimera is a hybrid proxy protocol combining:
   possible - this is NOT a Vision replacement.
 - QUIC fast path v2: HMAC-SHA256 auth with random nonce + replay cache,
   mandatory certificate fingerprint pinning, dial-result confirmation
+- QUIC v0.4 h3 camouflage: standard ALPN h3 handshake; active probes are
+  reverse-proxied to the REALITY target site (they see the real website)
 
 Full spec: chimera-spec.md
 
@@ -91,10 +93,14 @@ against reference Xray-core VLESS+REALITY inbound (protocol-compatible with REAL
 3. Session-level random padding breaks payload-length signatures
 4. QUIC v2: per-stream random nonce + HMAC auth, replay cache, pinned certs
 5. QUIC has no default password; credentials derive from REALITY keys on both sides
+6. QUIC v0.4: ALPN is standard "h3"; unauthenticated connections are answered
+   with the borrowed site's real content instead of an error
 
 ## Known Limitations
 
 - No UDP associate in TCP mode yet (planned for QUIC mode)
 - No stream multiplexing yet (one connection per request; smux planned)
 - TCP mode remains detectable as TLS-in-TLS when the proxied app uses TLS
-- QUIC mode has no extra obfuscation layer yet (WG-style framing planned)
+- QUIC mode serves a self-signed cert (pinned client-side); the camouflage
+  relies on h3 ALPN + real-site reverse proxy for probes. It does not mimic
+  the target's certificate chain - that would require the target's private key.

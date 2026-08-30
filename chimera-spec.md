@@ -74,6 +74,14 @@ All post-handshake data is wrapped in frames:
 
 QUIC v1 over UDP. Server presents self-signed ECDSA P-256 certificate.
 Client pins server via SHA-256 fingerprint of the leaf certificate.
+ALPN is exactly "h3" (standard HTTP/3) in v0.4+.
+
+### Active-Probe Defense (v0.4+)
+
+Connections whose first stream does not start with the Chimera magic are
+treated as probes: the server reverse-proxies the REALITY target site over
+TCP/TLS and relays the real response. Probers see a working copy of the
+borrowed site rather than a protocol error.
 
 ### Authentication (v0.3+)
 
