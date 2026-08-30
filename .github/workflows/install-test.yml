@@ -19,7 +19,7 @@ jobs:
           set -e
           export CHIMERA_DIR=/opt/chimera PORT=9443 SNI=www.cloudflare.com PRIV=AAAA PUB=BBBB SID=cccc
           START=$(grep -n 'cat > /etc/systemd/system/chimera.service' install.sh | cut -d: -f1)
-          END=$(grep -n '^EOF$' install.sh | head -1 | cut -d: -f1)
+          END=$(awk -v s="$START" '/^EOF$/ { if (NR > s) { print NR; exit } }' install.sh)
           # Run the actual heredoc block with real bash - identical to installer behavior
           sed -n "$START,$END p" install.sh | sed "s|/etc/systemd/system/chimera.service|/tmp/chimera.service|" > /tmp/unit-block.sh
           bash /tmp/unit-block.sh
