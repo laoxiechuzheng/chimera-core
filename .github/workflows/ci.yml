@@ -1,32 +1,61 @@
-name: install-test
+name: ci
 on:
   push:
     branches: [main]
-    paths: [install.sh, .github/workflows/install-test.yml]
+  pull_request:
   workflow_dispatch:
 
 jobs:
-  debian-install:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
+
+  install-test:
     runs-on: ubuntu-latest
     container: debian:12
     steps:
       - uses: actions/checkout@v4
       - run: apt-get update -qq && apt-get install -y -qq curl
-
-      - name: Syntax check + real bash expansion of the unit-writing block
+      - name: Real bash expansion of unit-writing block
         run: |
           bash -n install.sh
           set -e
           export CHIMERA_DIR=/opt/chimera PORT=9443 SNI=www.cloudflare.com PRIV=AAAA PUB=BBBB SID=cccc
           START=$(grep -n 'cat > /etc/systemd/system/chimera.service' install.sh | cut -d: -f1)
           END=$(awk -v s="$START" '/^EOF$/ { if (NR > s) { print NR; exit } }' install.sh)
-          # Run the actual heredoc block with real bash - identical to installer behavior
           sed -n "$START,$END p" install.sh | sed "s|/etc/systemd/system/chimera.service|/tmp/chimera.service|" > /tmp/unit-block.sh
           bash /tmp/unit-block.sh
-          echo '--- generated unit:'
           cat /tmp/chimera.service
-          echo '--- checks:'
           if grep -q '`' /tmp/chimera.service; then echo 'FAIL: backtick in unit'; exit 1; fi
-          grep -q -- '-key $PRIV -sid $SID' /tmp/chimera.service
+          grep -q -- '-key \$PRIV -sid \$SID' /tmp/chimera.service
           grep -q 'EnvironmentFile=/opt/chimera/keys.env' /tmp/chimera.service
           echo 'unit file OK'

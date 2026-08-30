@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/chimera-proxy/chimera-core/internal/chimera"
 	"github.com/chimera-proxy/chimera-core/internal/padstream"
@@ -94,20 +95,26 @@ func main() {
 
 	if !*quicDisable {
 		if *quicListen == "" && *listen != "" {
-			// Auto-share the same port number for UDP (single-port mode)
-			_, port, _ := net.SplitHostPort(*listen)
-			*quicListen = ":" + port
+			// Auto-share the same host:port for UDP (single-port mode), so a
+			// TCP bind to 127.0.0.1 does not silently expose QUIC on all
+			// interfaces.
+			*quicListen = *listen
 		}
 		pass := *quicPass
-		if pass == "" && len(shortIds) > 0 {
-			// Derive from the PUBLIC key (base64) + short ID so the client can
-			// compute the identical password from connection info it already has.
+		var passes []string
+		if pass != "" {
+			passes = []string{pass}
+		} else {
+			// Derive from the PUBLIC key (base64) + each short ID so the client
+			// can compute the identical password from connection info it has.
 			curve := ecdh.X25519()
 			priv, _ := curve.NewPrivateKey(privKey)
 			pubB64 := base64.RawURLEncoding.EncodeToString(priv.PublicKey().Bytes())
-			pass = deriveQUICPassword(shortIds[0], pubB64)
+			for _, sid := range shortIds {
+				passes = append(passes, deriveQUICPassword(sid, pubB64))
+			}
 		}
-		_, fp, err := quicx.ListenServer(context.Background(), *quicListen, pass, *target)
+		_, fp, err := quicx.ListenServer(context.Background(), *quicListen, passes, *target)
 		if err != nil {
 			log.Fatalf("quic listen: %v", err)
 		}
@@ -155,8 +162,39 @@ func handleConn(conn net.Conn) {
 		log.Printf("unsupported cmd %d", cmd)
 		return
 	}
+	if chimera.IsForbiddenTarget(addr) {
+		log.Printf("blocked private target: %s", addr)
+		_ = chimera.WriteSessionResponse(pc, chimera.StatusDialError)
+		return
+	}
 
-	target, err := net.DialTimeout("tcp", addr.String(), 10*1e9)
+	// Resolve domains and re-check the resolved IPs against the private
+	// guard, so DNS names cannot bypass the private-network block.
+	var target net.Conn
+	if addr.Type == chimera.AtypDomain {
+		ips, rerr := net.LookupIP(addr.Domain)
+		if rerr != nil {
+			log.Printf("resolve %s: %v", addr.Domain, rerr)
+			_ = chimera.WriteSessionResponse(pc, chimera.StatusDialError)
+			return
+		}
+		blocked := len(ips) > 0
+		for _, ip := range ips {
+			a4 := &chimera.Address{Type: chimera.AtypIPv4, IP: ip, Port: addr.Port}
+			a6 := &chimera.Address{Type: chimera.AtypIPv6, IP: ip, Port: addr.Port}
+			if !chimera.IsForbiddenTarget(a4) && !chimera.IsForbiddenTarget(a6) {
+				blocked = false
+				break
+			}
+		}
+		if blocked {
+			log.Printf("blocked private DNS target: %s", addr)
+			_ = chimera.WriteSessionResponse(pc, chimera.StatusDialError)
+			return
+		}
+	}
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	target, err = dialer.DialContext(context.Background(), "tcp", addr.String())
 	if err != nil {
 		log.Printf("dial %s: %v", addr, err)
 		// Tell the client the target dial failed so it can surface an error

@@ -19,7 +19,7 @@ import (
 )
 
 var (
-	socksAddr   = flag.String("socks", ":1080", "SOCKS5 listen address")
+	socksAddr   = flag.String("socks", "127.0.0.1:1080", "SOCKS5 listen address")
 	serverAddr  = flag.String("server", "", "chimera server address host:port")
 	serverName  = flag.String("sni", "", "SNI (must be in server whitelist)")
 	pubKeyB64   = flag.String("pub", "", "server x25519 public key (base64)")
@@ -96,16 +96,14 @@ func handleSocks5(conn net.Conn, cfg *realclient.ClientConfig) {
 
 func chimeraConnect(socks net.Conn, target *chimera.Address, cfg *realclient.ClientConfig) error {
 	if *autoMode {
-		// Try QUIC first with 3s timeout
-		// Since we can't reuse the same socks conn after QUIC failure, we need to handle
-		// this at the caller level. For now, just try QUIC and if it fails try TCP.
+		// QUIC first; on any failure fall through to the TCP/REALITY path.
+		// The SOCKS reply is only sent by whichever path succeeds, so the
+		// fallback is transparent to the client application.
 		err := chimeraConnectQuic(socks, target)
 		if err == nil {
 			return nil
 		}
 		log.Printf("QUIC failed (%v), falling back to TCP...", err)
-		socks5Reply(socks, 0x01) // signal error
-		return err
 	}
 	if *quicMode {
 		return chimeraConnectQuic(socks, target)

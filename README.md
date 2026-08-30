@@ -58,6 +58,11 @@ Good targets: www.cloudflare.com, www.bing.com, dl.google.com.
 
     chimera-client -socks :1080 -server SERVER_IP:8443 -sni www.cloudflare.com -pub PUBLIC_KEY -sid SHORT_ID -fp chrome
 
+SOCKS5 defaults to 127.0.0.1:1080 (loopback only). QUIC certificates persist
+(default ./quic-cert.pem, override with CHIMERA_QUIC_CERT) so the fingerprint
+stays stable across restarts. Servers refuse private / loopback / link-local /
+CGNAT / metadata targets, including DNS names that resolve to them.
+
 ## Client Start (QUIC speed mode, needs server -quic)
 
 The server prints its QUIC cert fingerprint at startup; pass it via -quic-fp

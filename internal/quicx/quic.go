@@ -11,12 +11,14 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -45,6 +47,23 @@ import (
 const h3ALPN = "h3"
 
 func generateCert() (tls.Certificate, string, error) {
+	// Persist the certificate so the fingerprint stays stable across restarts.
+	// Path can be overridden with CHIMERA_QUIC_CERT; default is quic-cert.pem
+	// in the working directory (installer places it in /opt/chimera).
+	certPath := "quic-cert.pem"
+	if v := os.Getenv("CHIMERA_QUIC_CERT"); v != "" {
+		certPath = v
+	}
+	if b, err := os.ReadFile(certPath); err == nil {
+		block, _ := pem.Decode(b)
+		if block != nil {
+			cert, err := tls.X509KeyPair(b, b)
+			if err == nil {
+				sum := sha256.Sum256(cert.Certificate[0])
+				return cert, hex.EncodeToString(sum[:]), nil
+			}
+		}
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return tls.Certificate{}, "", err
@@ -61,23 +80,40 @@ func generateCert() (tls.Certificate, string, error) {
 	if err != nil {
 		return tls.Certificate{}, "", err
 	}
+	// Save cert+key together in one PEM so it can be reloaded.
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return tls.Certificate{}, "", err
+	}
+	var pemBuf bytes.Buffer
+	pem.Encode(&pemBuf, &pem.Block{Type: "CERTIFICATE", Bytes: der})
+	pem.Encode(&pemBuf, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(certPath, pemBuf.Bytes(), 0600); err != nil {
+		// Non-fatal: fingerprint just won't persist.
+		_ = err
+	}
 	sum := sha256.Sum256(der)
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, hex.EncodeToString(sum[:]), nil
 }
 
 type Server struct {
-	listener *quic.Listener
-	password string
-	replay   *chimera.ReplayCache
-	target   string // host:port of the REALITY target site for probe fallback
+	listener  *quic.Listener
+	passwords []string
+	replay    *chimera.ReplayCache
+	target    string // host:port of the REALITY target site for probe fallback
 }
 
 // ListenServer starts the camouflaged QUIC endpoint. password and target are
 // mandatory: no password would recreate the open-proxy hole, no target would
 // leave active probes unanswered.
-func ListenServer(ctx context.Context, listenAddr, password, target string) (*Server, string, error) {
-	if password == "" {
+func ListenServer(ctx context.Context, listenAddr string, passwords []string, target string) (*Server, string, error) {
+	if len(passwords) == 0 {
 		return nil, "", errors.New("quicx: refusing to listen without a password (open proxy guard)")
+	}
+	for _, p := range passwords {
+		if p == "" {
+			return nil, "", errors.New("quicx: empty password in list")
+		}
 	}
 	if target == "" {
 		return nil, "", errors.New("quicx: refusing to listen without a fallback target")
@@ -99,10 +135,10 @@ func ListenServer(ctx context.Context, listenAddr, password, target string) (*Se
 		return nil, "", err
 	}
 	s := &Server{
-		listener: listener,
-		password: password,
-		replay:   chimera.NewReplayCache(10 * time.Minute),
-		target:   target,
+		listener:  listener,
+		passwords: passwords,
+		replay:    chimera.NewReplayCache(10 * time.Minute),
+		target:    target,
 	}
 	go s.acceptLoop(ctx)
 	return s, fingerprint, nil
@@ -178,12 +214,28 @@ func (s *Server) handleChimeraStream(ctx context.Context, conn quic.Connection, 
 		reader = newPrefixReader(stream, prefix)
 	}
 	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
-	cmd, addr, err := chimera.ReadQUICConnectWithCache(reader, s.password, s.replay)
+	var cmd byte
+	var addr *chimera.Address
+	var err error
+	for _, pw := range s.passwords {
+		cmd, addr, err = chimera.ReadQUICConnectWithCache(reader, pw, s.replay)
+		if err == nil {
+			break
+		}
+		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, chimera.ErrBadMagic) || errors.Is(err, chimera.ErrVersionMismatch) {
+			// Frame is malformed rather than mis-authenticated: stop early.
+			return
+		}
+	}
 	if err != nil {
 		return
 	}
 	stream.SetReadDeadline(time.Time{})
 	if cmd != chimera.CmdConnect {
+		return
+	}
+	if chimera.IsForbiddenTarget(addr) {
+		_ = chimera.WriteQUICResult(stream, chimera.QUICStatusDialError)
 		return
 	}
 
