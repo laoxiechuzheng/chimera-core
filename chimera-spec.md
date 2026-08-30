@@ -1,155 +1,189 @@
-# Chimera Protocol Specification v1
+# Chimera Protocol Specification v0.5
 
-## Overview
+## 1. Scope
 
-Chimera is a hybrid proxy protocol combining:
-- **REALITY** handshake for SNI whitelist camouflage (borrowed real-site TLS 1.3)
-- **AnyTLS-inspired** session-level padding (defeats traffic analysis)
-- **Vision-style** raw payload relay (avoids TLS-in-TLS fingerprinting)
-- **TUIC/Hysteria2-inspired** QUIC/UDP fast path (speed mode)
+Chimera proxies TCP application streams over one of two carriers:
 
-## Modes
+- TCP/REALITY with the Chimera v1 session and padding frames.
+- QUIC with a standards-valid HTTP/3 basic CONNECT request.
 
-### Mode T (TCP/REALITY - Mimic Mode)
+The v0.5 H3 carrier is a breaking replacement for the v0.3/v0.4 raw QUIC protocol. TCP/REALITY is unchanged at the wire level. v0.5 does not define SOCKS UDP ASSOCIATE, CONNECT-UDP, IP tunneling, or arbitrary UDP target relay.
 
-Priority: camouflage. Uses REALITY handshake with SNI whitelist.
+## 2. TCP/REALITY carrier
 
-### Mode U (QUIC - Speed Mode)
+### 2.1 Handshake
 
-Priority: throughput. Uses QUIC v1 with certificate pinning + optional obfuscation.
+The client performs a REALITY handshake using an allowed SNI, server public key, SID, and selected uTLS fingerprint. Non-authenticated TLS connections follow the REALITY target-site fallback behavior supplied by the XTLS/REALITY library.
 
-## Mode T Wire Format
+After REALITY authentication, the client sends a 32-byte Chimera session header:
 
-### Handshake
+```text
+[0..3]   43 48 49 4d ("CHIM")
+[4]      version = 01
+[5]      flags
+[6..7]   reserved = 00 00
+[8..31]  ignored padding
+```
 
-Standard REALITY handshake (borrowed real-site TLS 1.3). After REALITY verify succeeds:
+The server replies:
 
-#### Client -> Server: Session Header (32 bytes)
+```text
+[0..3]   43 48 49 4d
+[4]      version = 01
+[5]      status (00 = OK)
+[6..7]   reserved
+```
 
-    [0-3]   magic 0x43 0x48 0x49 0x4D ("CHIM")
-    [4]     version 0x01
-    [5]     flags
-            bit 0: padding enabled
-            bit 1: multiplexing enabled
-            bit 2-7: reserved
-    [6-7]   reserved (zero)
-    [8-31]  padding (random, discarded)
+### 2.2 Target request
 
-#### Server -> Client: Session Response (8 bytes)
+Inside the padding stream:
 
-    [0-3]   magic 0x43 0x48 0x49 0x4D
-    [4]     version 0x01
-    [5]     status (0x00 = OK, 0x01 = version mismatch)
-    [6-7]   reserved
+```text
+[0]      command (01 = TCP CONNECT)
+[1]      address type (01 IPv4, 03 domain, 04 IPv6)
+[...]    address
+[...]    port, uint16 big-endian
+```
 
-### Target Connect (within padding stream)
+The server resolves domains, rejects forbidden destinations, dials a validated IP literal, then sends a Chimera session response with status `00` only after the target TCP connection succeeds.
 
-    [0]     command (0x01 = TCP connect, 0x03 = UDP associate)
-    [1]     addr type (0x01 = IPv4, 0x03 = domain, 0x04 = IPv6)
-    [..]    address
-            IPv4: 4 bytes
-            domain: 1 byte length + domain bytes
-            IPv6: 16 bytes
-    [..]    port (2 bytes big-endian)
+### 2.3 Padding frame
 
-### Padding Stream Frame
+```text
+[0]      frame type (00 padding-only, 01 data+padding, 02 data)
+[1..2]   payload length, uint16 big-endian
+[3..4]   padding length, uint16 big-endian
+[...]    random padding
+[...]    payload
+```
 
-All post-handshake data is wrapped in frames:
+The current default applies up to 255 bytes of padding to the first eight frames and up to 64 bytes afterward. This is limited traffic-analysis resistance; it is not AnyTLS wire compatibility and does not eliminate TLS-in-TLS characteristics when the proxied application also uses TLS.
 
-    [0]     frame type (0x00 = padding only, 0x01 = data with padding, 0x02 = data no padding)
-    [1-2]   payload length (big-endian uint16, 0-65535)
-    [3-4]   padding length (big-endian uint16, 0-65535)
-    [..]    padding bytes (random)
-    [..]    payload
+## 3. HTTP/3 CONNECT carrier
 
-### Padding Policy (AnyTLS-inspired)
+### 3.1 QUIC and TLS
 
-- First 8 frames after handshake: padding length = random(0, 255) applied to client requests
-- Subsequent frames: padding length = random(0, max_padding) where max_padding is configurable
-- Random 20% chance of sending a padding-only frame (0x00) to break timing patterns
+- QUIC version: implementation-supported QUIC v1.
+- ALPN: standard `h3` through the HTTP/3 library.
+- TLS minimum: TLS 1.3.
+- Client authentication of the server: mandatory SHA-256 pin of the leaf certificate DER.
+- Default certificate mode: persisted self-signed ECDSA P-256 certificate whose SAN/CN is the configured server name.
+- Preferred certificate mode: a CA-signed certificate and private key for a domain controlled by the operator.
 
-## Mode U Wire Format (QUIC)
+The pinned self-signed mode protects the authorized client from an on-path certificate substitution. It does not reproduce REALITY's borrowed-certificate behavior and must not be described as REALITY-equivalent camouflage.
 
-### Transport
+### 3.2 Key derivation
 
-QUIC v1 over UDP. Server presents self-signed ECDSA P-256 certificate.
-Client pins server via SHA-256 fingerprint of the leaf certificate.
-ALPN is exactly "h3" (standard HTTP/3) in v0.4+.
+The installer generates an independent, random 32-byte `QUIC_PSK`. For each REALITY SID, the H3 authentication key is:
 
-### Active-Probe Defense (v0.4+)
+```text
+HKDF-SHA256(
+  ikm  = QUIC_PSK,
+  salt = REALITY_PUBLIC_KEY || SHORT_ID,
+  info = "chimera-h3-auth-v1",
+  len  = 32
+)
+```
 
-Connections whose first stream does not start with the Chimera magic are
-treated as probes: the server reverse-proxies the REALITY target site over
-TCP/TLS and relays the real response. Probers see a working copy of the
-borrowed site rather than a protocol error.
+The PSK is not derived from public information. PSK, public key, and SID length validation is fail-closed.
 
-### Authentication (v0.3+)
+### 3.3 CONNECT request
 
-Each QUIC stream sends one authenticated connect frame:
+Each target TCP connection uses one HTTP/3 basic CONNECT request:
 
-    [0-3]   magic "CHIM"
-    [4]     version 0x02
-    [5]     cmd (0x01 = connect)
-    [6]     nonce length (8)
-    [7-14]  nonce (8 random bytes)
-    [15-46] HMAC-SHA256(auth_password, nonce)
-    [47..]  target address (same encoding as Mode T Target Connect)
+```text
+:method    = CONNECT
+:authority = host:port
+authorization = Bearer <base64url token>
+user-agent = browser-like static value
+```
 
-Server verifies HMAC, rejects replayed nonces via a 10-minute replay cache,
-and answers with an 8-byte result frame before relaying. The auth password is
-derived on both sides as HMAC-SHA256("chimera-quic-key-v2", short_id ||
-base64url(public_key)) - no separate QUIC password is configured.
+The authority uses brackets for IPv6. The HTTP/3 implementation supplies SETTINGS, QPACK, HEADERS, and DATA framing; Chimera does not write raw HTTP/1.1 bytes or custom stream magic.
 
-UDP datagram obfuscation (Salamander-style) is NOT implemented in v0.3; it is
-a planned feature. Do not rely on it.
+### 3.4 Authorization token
 
-### Dial Confirmation
+Decoded token bytes:
 
-After the target TCP connection succeeds, the server sends:
+```text
+[0]       version = 05
+[1..8]    Unix timestamp, uint64 big-endian
+[9..24]   nonce, 16 random bytes
+[25..56]  HMAC-SHA256(auth_key, canonical_input)
+```
 
-    [0-3]   magic "CHIM"
-    [4]     version 0x02
-    [5]     status (0x00 = OK, 0x02 = dial error)
-    [6-7]   reserved
+The HTTP header is:
 
-The client only reports success upstream after receiving status 0x00.
+```text
+Authorization: Bearer base64url(token_without_padding)
+```
 
-### Target Connect (per QUIC stream)
+Canonical HMAC input:
 
-Same as Mode T Target Connect format (without outer padding stream,
-QUIC handles stream multiplexing natively).
+```text
+version(1)
+|| timestamp(8)
+|| nonce(16)
+|| uint16(len(upper(method))) || upper(method)
+|| uint16(len(lower(trim(authority)))) || lower(trim(authority))
+|| uint16(len(lower(trim(server_name)))) || lower(trim(server_name))
+```
 
-### UDP Relay
+The server accepts a maximum default clock skew of 60 seconds. It compares the token against every configured SID-derived key, inserts the nonce only after a valid MAC, and stores accepted nonces in a hard-bounded replay cache (default capacity 4096).
 
-Client opens a dedicated bidirectional stream for UDP relay. Packets are
-framed as:
+### 3.5 Response and stream
 
-    Client -> Server:
-    [0-7]   session ID (uint64 big-endian, client-assigned)
-    [1-2]   addr type + addr + port (same as Target Connect)
-    [..]    payload
+- `2xx`: target dial succeeded; request and response HTTP/3 DATA frames become the bidirectional TCP byte stream.
+- Non-`2xx`: no proxy stream is returned to the client.
+- The client drains at most 4 KiB of an error body before closing the failed request.
+- Closing the returned mihomo connection closes both the request stream and its one-per-target parent H3/QUIC connection exactly once.
 
-    Server -> Client:
-    [0-7]   session ID
-    [..]    payload
+## 4. Decoy and active-probe behavior
 
-## Security Properties
+The H3 server accepts ordinary standards-valid HTTP/3 requests. Missing, malformed, expired, replayed, or wrong-key CONNECT authentication follows the same bounded unauthenticated response class; no raw `CHIM` classification branch exists.
 
-1. **SNI whitelist**: Only configured server names are accepted; mismatch falls back to real site
-2. **Certificate forgery immunity**: REALITY borrows real cert chain from target site
-3. **Active probing resistance**: Non-authenticated connections are transparently proxied to the real site
-4. **Traffic analysis resistance**: AnyTLS-style padding breaks payload-length signatures
-5. **TLS-in-TLS avoidance**: Payload is relayed raw inside the outer TLS (no nested TLS wrapping)
-6. **Forward secrecy**: Standard TLS 1.3 forward secrecy from REALITY handshake
-7. **Replay resistance (Mode U)**: Per-session nonce + HMAC verification
+The decoy snapshot:
 
-## Dependencies
+- is fetched at startup and refreshed no more than once per ten minutes;
+- uses a five-second timeout and no redirects;
+- validates the resolved origin address before dialing it;
+- has a 256 KiB maximum body;
+- retains only a small safe header allowlist;
+- is served from memory for individual probes;
+- falls back to a bounded built-in body if origin refresh fails.
 
-- github.com/xtls/reality (REALITY TLS fork)
-- github.com/refraction-networking/utls (uTLS for client fingerprinting)
-- github.com/quic-go/quic-go (QUIC implementation)
+Global concurrency, per-IP unauthenticated burst limits, maximum tracked IPs, QUIC stream limits, handshake timeout, and idle timeout are bounded. Authenticated tunnels retain the global concurrency limit but are not incorrectly charged against the unauthenticated probe bucket.
 
-## License
+## 5. Target safety
 
-MIT. Chimera is a derivative work inspired by VLESS/REALITY (XTLS), AnyTLS,
-TUIC v5, and Hysteria2. Those projects' licenses apply to their respective code.
+Both carriers parse `host:port`, reject zero/invalid ports, resolve domains on the server, and reject the entire DNS result if any answer is loopback, private, link-local, multicast, unspecified, CGNAT, documentation, benchmark, reserved, or metadata-relevant space. The server dials a selected validated IP literal rather than resolving the original hostname again.
+
+This policy is designed to prevent a leaked client credential from turning the proxy into a server-side LAN or metadata springboard. Operators should still apply host-level egress controls where practical.
+
+## 6. Client mode selection
+
+- `tcp`: create TCP/REALITY only.
+- `quic`: create QUIC/H3 only; TCP reachability is irrelevant.
+- `auto`: attempt QUIC with a default 1200 ms selection budget, then lazily create TCP only if QUIC failed.
+
+Successful QUIC selection does not create or retain a TCP socket. All partial or losing connections are closed. `auto-quic-timeout` is configured in milliseconds in mihomo and as a Go duration in the standalone client.
+
+## 7. Privacy and observability
+
+A passive ISP or Wi-Fi observer sees encrypted TLS/REALITY TCP traffic in TCP mode or encrypted QUIC/H3 UDP traffic in QUIC mode, plus metadata such as server IP, port, timing, packet sizes, and volume. The Chimera server can observe target addresses and traffic metadata; it can read plaintext applications. HTTPS/SSH content remains protected by the application's own end-to-end encryption.
+
+Chimera does not provide anonymity, endpoint security, malicious-server protection, or guaranteed resistance to DPI, blocking, traffic analysis, or QoS. QUIC and TCP may perform differently on a given path, which is why the explicit and bounded modes exist.
+
+## 8. Compatibility
+
+- v0.5 TCP/REALITY: compatible with the previous Chimera TCP carrier.
+- v0.5 H3: incompatible with v0.3/v0.4 raw QUIC clients and servers.
+- v0.5 QUIC requires the independent PSK and certificate fingerprint.
+- A v0.5 server and matching v0.5 core/mihomo client must be deployed together before using `quic` or `auto`.
+
+## 9. Release requirements
+
+Release gates include formatting, full tests, Linux race tests, vet, source vulnerability scanning, Debian 12 installer upgrade behavior, Windows/Linux builds, end-to-end TCP/H3/auto tests, certificate persistence, invalid-auth/replay/SSRF tests, clean VCS metadata, and SHA-256 checksums.
+
+## 10. License
+
+Chimera core is MIT licensed. Dependencies and the mihomo fork retain their own licenses, including mihomo's GPL-3.0 terms.

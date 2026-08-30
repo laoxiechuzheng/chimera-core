@@ -1,111 +1,154 @@
-# Chimera Protocol
+# Chimera v0.5
 
-Debian 12 one-command server install. Interactive mode asks for the port and SNI;
-press Enter to accept the defaults:
+Chimera is a TCP proxy with two selectable carriers:
 
-    bash <(curl -fsSL https://raw.githubusercontent.com/laoxiechuzheng/chimera-core/main/install.sh)
+- `tcp`: REALITY with an SNI whitelist and the existing Chimera padding stream.
+- `quic`: a standards-valid HTTP/3 basic CONNECT tunnel with an independent PSK and mandatory certificate pinning.
+- `auto`: try QUIC for a bounded period, then lazily fall back to TCP/REALITY.
 
-Non-interactive install with a custom port and SNI:
+v0.5 replaces the old raw `CHIM`-over-QUIC prototype. Its QUIC carrier is intentionally incompatible with v0.3/v0.4; TCP/REALITY remains compatible.
 
-    bash <(curl -fsSL https://raw.githubusercontent.com/laoxiechuzheng/chimera-core/main/install.sh) --port 9443 --sni www.bing.com
+## What it does and does not do
 
-Upgrades reuse /opt/chimera/keys.env, so existing client keys remain valid.
+- TCP/REALITY provides the strongest active-probe fallback in this project: a non-authenticated TLS client is sent to the configured real site.
+- QUIC is real HTTP/3, not HTTP/1.1 bytes hidden behind an `h3` ALPN. Ordinary H3 requests receive a cached, bounded decoy response.
+- QUIC uses UDP on the wire but currently carries TCP CONNECT streams. Chimera does **not** implement SOCKS UDP ASSOCIATE, CONNECT-UDP, or arbitrary UDP relay.
+- The self-signed QUIC certificate is securely pinned by authorized clients, but it is not equivalent to REALITY camouflage. A domain and CA-signed certificate you control can reduce that distinction.
+- Chimera does not promise anonymity, immunity from DPI/QoS/blocking, or protection from a malicious server. Sensitive applications should still use HTTPS, SSH, or application-level end-to-end encryption.
 
-Releases: https://github.com/laoxiechuzheng/chimera-core/releases
-Native mihomo kernel: https://github.com/laoxiechuzheng/mihomo/releases/tag/v1.19-chimera.6
+## Debian 12 server install
 
-Chimera is a hybrid proxy protocol combining:
-- REALITY handshake (SNI whitelist + borrowed real-site cert, active-probing resistant)
-- Session padding (AnyTLS-inspired, reduced-strength traffic-analysis resistance)
-- Application bytes relayed unmodified inside the REALITY TLS session.
-  NOTE: if the proxied app itself uses TLS, TLS-in-TLS signatures remain
-  possible - this is NOT a Vision replacement.
-- QUIC fast path v2: HMAC-SHA256 auth with random nonce + replay cache,
-  mandatory certificate fingerprint pinning, dial-result confirmation
-- QUIC v0.4 h3 camouflage: standard ALPN h3 handshake; active probes are
-  reverse-proxied to the REALITY target site (they see the real website)
+Interactive install (asks for one shared TCP/UDP port and the SNI):
 
-Full spec: chimera-spec.md
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/laoxiechuzheng/chimera-core/main/install.sh)
+```
+
+Non-interactive example:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/laoxiechuzheng/chimera-core/main/install.sh) --port 9443 --sni g.alicdn.com
+```
+
+The installer does not change firewall rules. It:
+
+- verifies the release binary with `checksums-sha256.txt`;
+- preserves existing REALITY keys, short IDs, port, and SNI;
+- generates an independent 32-byte `QUIC_PSK` only when missing;
+- stores secrets in `/opt/chimera/keys.env` with mode `0600`;
+- persists the QUIC certificate in `/var/lib/chimera/quic-v5-cert.pem`;
+- runs the service as a restricted dynamic systemd user;
+- prints the public key, SID, QUIC PSK, and certificate fingerprint needed by clients.
+
+Existing installations use the same command to upgrade. QUIC clients and the server must both be upgraded to v0.5 before selecting `quic` or `auto`.
+
+Useful checks:
+
+```bash
+systemctl status chimera --no-pager
+journalctl -u chimera -n 100 --no-pager
+```
+
+## Native mihomo configuration
+
+Use the matching Chimera-enabled mihomo release:
+
+```yaml
+proxies:
+  - name: chimera
+    type: chimera
+    server: YOUR_VPS_IP
+    port: 9443
+    sni: g.alicdn.com
+    public-key: YOUR_REALITY_PUBLIC_KEY
+    short-id: YOUR_SHORT_ID
+    client-fingerprint: chrome
+    mode: auto                 # tcp | quic | auto
+    quic-psk: YOUR_QUIC_PSK
+    quic-fp: YOUR_QUIC_CERT_SHA256
+    auto-quic-timeout: 1200    # milliseconds; auto mode only
+```
+
+Mode behavior is deterministic:
+
+- `tcp` opens TCP/REALITY only. `quic-psk` and `quic-fp` are not required.
+- `quic` opens UDP/HTTP3 only. A blocked TCP port does not prevent the attempt.
+- `auto` attempts QUIC for `auto-quic-timeout`, then opens TCP only if QUIC failed. QUIC success creates no TCP socket.
+
+The Chimera-enabled mihomo remains a normal mihomo kernel and retains standard VLESS/REALITY, VMess, Trojan, Hysteria2, TUIC, AnyTLS, TUN, DNS, and rule support from its upstream tree. Chimera itself currently advertises TCP streams only; setting `udp: true` does not add a UDP relay.
+
+## Standalone client
+
+TCP only:
+
+```bash
+chimera-client \
+  -socks 127.0.0.1:1080 \
+  -server YOUR_VPS_IP:9443 \
+  -sni g.alicdn.com \
+  -pub YOUR_REALITY_PUBLIC_KEY \
+  -sid YOUR_SHORT_ID \
+  -fp chrome
+```
+
+Auto mode:
+
+```bash
+chimera-client \
+  -socks 127.0.0.1:1080 \
+  -server YOUR_VPS_IP:9443 \
+  -sni g.alicdn.com \
+  -pub YOUR_REALITY_PUBLIC_KEY \
+  -sid YOUR_SHORT_ID \
+  -fp chrome \
+  -auto \
+  -quic-psk YOUR_QUIC_PSK \
+  -quic-fp YOUR_QUIC_CERT_SHA256 \
+  -auto-quic-timeout 1200ms
+```
+
+Use `-quic` instead of `-auto` to prohibit TCP fallback.
+
+## Manual server start
+
+Secrets may be supplied through environment variables so they do not appear in the process command line:
+
+```bash
+export CHIMERA_PRIVATE_KEY='YOUR_PRIVATE_KEY'
+export CHIMERA_SHORT_IDS='YOUR_SHORT_ID'
+export CHIMERA_QUIC_PSK='YOUR_QUIC_PSK'
+export CHIMERA_QUIC_CERT='/var/lib/chimera/quic-v5-cert.pem'
+
+chimera-server \
+  -listen :9443 \
+  -target g.alicdn.com:443 \
+  -sni g.alicdn.com
+```
+
+Use `-no-quic` for TCP-only service. Multiple comma-separated SIDs are supported; each SID derives its own H3 auth key from the same independent PSK.
+
+## Security controls in v0.5
+
+- H3 auth key: HKDF-SHA256 over the independent PSK, REALITY public key, and SID.
+- Per-request timestamp, 16-byte random nonce, HMAC-SHA256, and a hard-bounded replay cache.
+- Mandatory SHA-256 leaf-certificate pinning for QUIC clients.
+- DNS resolution followed by public-IP validation, then dialing the validated IP literal to reduce SSRF and DNS-rebinding risk.
+- Cached decoy responses, a 256 KiB body cap, no request-triggered origin fetch, bounded tracked IPs, and concurrency/rate limits.
+- SOCKS defaults to `127.0.0.1:1080` and rejects clients that do not offer no-auth rather than silently accepting an unsupported method.
+
+See [chimera-spec.md](chimera-spec.md) for the wire contract and limits.
 
 ## Build
 
-    go build -o chimera-server ./cmd/chimera-server
-    go build -o chimera-client ./cmd/chimera-client
+Go 1.25.13 or newer in the Go 1.25 series is required for the release build:
 
-Requires Go 1.24+. First build downloads deps from network.
+```bash
+go build -trimpath -o chimera-server ./cmd/chimera-server
+go build -trimpath -o chimera-client ./cmd/chimera-client
+```
 
-## Generate Keys
+Releases include SHA-256 checksums and must be built from a clean tagged checkout with `vcs.modified=false`.
 
-    chimera-server -genkey
+## License
 
-Outputs Private Key (server), Public Key (client), Short ID (both).
-
-## Server Start
-
-    chimera-server -listen :8443 -target www.cloudflare.com:443 -sni www.cloudflare.com -key PRIVATE_KEY -sid SHORT_ID
-
-- target: borrowed real site (prefer TLS1.3+H2, short cert chain, IP close to server)
-- sni: whitelist; client SNI must be in this list
-- QUIC shares the same UDP port automatically; the auth password is derived
-  from the public key + short ID on both sides (no extra config)
-- use -no-quic for TCP-only mode (no UDP listener)
-
-NOTE: avoid targets whose TLS handshake exceeds 8KB (e.g. www.microsoft.com) with upstream
-REALITY lib. Our fork raised the limit to 64KB but short-chain sites are still recommended.
-Good targets: www.cloudflare.com, www.bing.com, dl.google.com.
-
-## Client Start (TCP/REALITY mimic mode)
-
-    chimera-client -socks :1080 -server SERVER_IP:8443 -sni www.cloudflare.com -pub PUBLIC_KEY -sid SHORT_ID -fp chrome
-
-SOCKS5 defaults to 127.0.0.1:1080 (loopback only). QUIC certificates persist
-(default ./quic-cert.pem, override with CHIMERA_QUIC_CERT) so the fingerprint
-stays stable across restarts. Servers refuse private / loopback / link-local /
-CGNAT / metadata targets, including DNS names that resolve to them.
-
-## Client Start (QUIC speed mode, needs server -quic)
-
-The server prints its QUIC cert fingerprint at startup; pass it via -quic-fp
-(mandatory - the client refuses QUIC without pinning):
-
-    chimera-client -socks :1080 -server SERVER_IP:8443 -sni www.cloudflare.com -pub PUBLIC_KEY -sid SHORT_ID -quic -quic-fp FINGERPRINT
-
-The QUIC auth password is derived automatically from -sid/-pub. Both TCP and
-QUIC clients now wait for a dial-confirmation frame, so a SOCKS5 success reply
-means the target is actually connected.
-
-## mihomo Integration
-
-Use the native outbound directly (v1.19-chimera.3+ kernels):
-
-    proxies:
-      - name: chimera
-        type: chimera
-        server: SERVER_IP
-        port: 8443
-        sni: www.cloudflare.com
-        public-key: PUBLIC_KEY
-        short-id: SHORT_ID
-        client-fingerprint: chrome
-
-Both modes verified working end-to-end. Our client's REALITY handshake also completes
-against reference Xray-core VLESS+REALITY inbound (protocol-compatible with REALITY spec).
-
-## Security Properties
-
-1. Non-whitelisted SNI transparently falls back to the real site
-2. Certificate chain is the real target's - no cert-chain attack possible
-3. Session-level random padding breaks payload-length signatures
-4. QUIC v2: per-stream random nonce + HMAC auth, replay cache, pinned certs
-5. QUIC has no default password; credentials derive from REALITY keys on both sides
-6. QUIC v0.4: ALPN is standard "h3"; unauthenticated connections are answered
-   with the borrowed site's real content instead of an error
-
-## Known Limitations
-
-- No UDP associate in TCP mode yet (planned for QUIC mode)
-- No stream multiplexing yet (one connection per request; smux planned)
-- TCP mode remains detectable as TLS-in-TLS when the proxied app uses TLS
-- QUIC mode serves a self-signed cert (pinned client-side); the camouflage
-  relies on h3 ALPN + real-site reverse proxy for probes. It does not mimic
-  the target's certificate chain - that would require the target's private key.
+MIT. See [LICENSE](LICENSE). REALITY, uTLS, quic-go, and other dependencies retain their own licenses.
