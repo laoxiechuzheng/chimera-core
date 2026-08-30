@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chimera-proxy/chimera-core/internal/chimera"
+	"github.com/laoxiechuzheng/chimera-core/internal/chimera"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )

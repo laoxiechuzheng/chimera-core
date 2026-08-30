@@ -17,10 +17,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chimera-proxy/chimera-core/internal/chimera"
-	"github.com/chimera-proxy/chimera-core/internal/padstream"
-	"github.com/chimera-proxy/chimera-core/internal/quicx"
-	"github.com/chimera-proxy/chimera-core/internal/realserv"
+	"github.com/laoxiechuzheng/chimera-core/internal/chimera"
+	"github.com/laoxiechuzheng/chimera-core/internal/padstream"
+	"github.com/laoxiechuzheng/chimera-core/internal/quicx"
+	"github.com/laoxiechuzheng/chimera-core/internal/realserv"
 )
 
 func main() {

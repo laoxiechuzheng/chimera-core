@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chimera-proxy/chimera-core/internal/chimera"
-	"github.com/chimera-proxy/chimera-core/internal/padstream"
-	"github.com/chimera-proxy/chimera-core/internal/quicx"
-	"github.com/chimera-proxy/chimera-core/internal/realclient"
+	"github.com/laoxiechuzheng/chimera-core/internal/chimera"
+	"github.com/laoxiechuzheng/chimera-core/internal/padstream"
+	"github.com/laoxiechuzheng/chimera-core/internal/quicx"
+	"github.com/laoxiechuzheng/chimera-core/internal/realclient"
 )
 
 var (

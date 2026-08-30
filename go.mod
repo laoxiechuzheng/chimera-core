@@ -1,4 +1,4 @@
-module github.com/chimera-proxy/chimera-core
+module github.com/laoxiechuzheng/chimera-core
 
 go 1.25.0
 
