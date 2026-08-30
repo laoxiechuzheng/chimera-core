@@ -77,6 +77,10 @@ func (d *Decoy) Refresh(ctx context.Context) error {
 }
 
 func (d *Decoy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	d.serveStatus(w, r, 0)
+}
+
+func (d *Decoy) serveStatus(w http.ResponseWriter, r *http.Request, statusOverride int) {
 	d.mu.RLock()
 	snapshot := DecoySnapshot{
 		Status: d.snapshot.Status,
@@ -90,7 +94,11 @@ func (d *Decoy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(snapshot.Body)))
-	w.WriteHeader(snapshot.Status)
+	status := snapshot.Status
+	if statusOverride != 0 {
+		status = statusOverride
+	}
+	w.WriteHeader(status)
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(snapshot.Body)
 	}

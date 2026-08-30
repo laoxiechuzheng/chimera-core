@@ -5,10 +5,10 @@ go 1.25.0
 toolchain go1.25.13
 
 require (
-	github.com/quic-go/quic-go v0.49.1
+	github.com/quic-go/quic-go v0.59.1
 	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af
 	github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f
-	golang.org/x/crypto v0.48.0
+	golang.org/x/crypto v0.53.0
 )
 
 require (
@@ -21,11 +21,13 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/onsi/ginkgo/v2 v2.9.5 // indirect
 	github.com/pires/go-proxyproto v0.11.0 // indirect
-	go.uber.org/mock v0.5.0 // indirect
+	github.com/quic-go/qpack v0.6.0 // indirect
+	go.uber.org/mock v0.5.2 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
-	golang.org/x/mod v0.18.0 // indirect
-	golang.org/x/net v0.49.0 // indirect
-	golang.org/x/sync v0.8.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
-	golang.org/x/tools v0.22.0 // indirect
+	golang.org/x/mod v0.37.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/tools v0.47.0 // indirect
 )
