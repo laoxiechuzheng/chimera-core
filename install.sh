@@ -1,5 +1,5 @@
 #!/bin/bash
-# Chimera v0.5 installer for Debian 12.
+# Chimera v0.6 installer for Debian 12.
 # Interactive: bash <(curl -fsSL https://raw.githubusercontent.com/laoxiechuzheng/chimera-core/main/install.sh)
 # Unattended:  bash <(curl -fsSL https://raw.githubusercontent.com/laoxiechuzheng/chimera-core/main/install.sh) --port 9443 --sni example.com
 set -euo pipefail
@@ -8,7 +8,7 @@ CHIMERA_DIR=${CHIMERA_DIR:-/opt/chimera}
 CHIMERA_STATE_DIR=${CHIMERA_STATE_DIR:-/var/lib/chimera}
 CHIMERA_SYSTEMD_DIR=${CHIMERA_SYSTEMD_DIR:-/etc/systemd/system}
 CHIMERA_REPO=${CHIMERA_REPO:-https://github.com/laoxiechuzheng/chimera-core}
-CHIMERA_VERSION=${CHIMERA_VERSION:-v0.5.0}
+CHIMERA_VERSION=${CHIMERA_VERSION:-v0.6.0}
 BINARY_ASSET=chimera-server-linux-amd64
 BINARY_URL=${CHIMERA_BINARY_URL:-$CHIMERA_REPO/releases/download/$CHIMERA_VERSION/$BINARY_ASSET}
 CHECKSUM_URL=${CHIMERA_CHECKSUM_URL:-$CHIMERA_REPO/releases/download/$CHIMERA_VERSION/checksums-sha256.txt}
@@ -234,7 +234,7 @@ main() {
   echo "  QUIC PSK:        $CHIMERA_QUIC_PSK"
   echo "  QUIC Fingerprint: $fingerprint"
   echo ""
-  echo "TCP/REALITY remains compatible. QUIC v0.5 requires a matching v0.5 client."
+  echo "TCP/REALITY and H3 TCP CONNECT remain compatible with v0.5. UDP relay requires a matching v0.6 Chimera-enabled mihomo core."
 }
 
 if [ "${CHIMERA_INSTALL_LIB_ONLY:-0}" != 1 ]; then

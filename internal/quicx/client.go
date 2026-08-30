@@ -24,13 +24,15 @@ import (
 )
 
 type Client struct {
-	Conn       *quic.Conn
-	h3         *http3.ClientConn
-	transport  *http3.Transport
-	auth       *Authenticator
-	serverName string
-	closeOnce  sync.Once
-	closeErr   error
+	Conn            *quic.Conn
+	h3              *http3.ClientConn
+	transport       *http3.Transport
+	auth            *Authenticator
+	serverName      string
+	enableDatagrams bool
+	udpMaxPacket    int
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 type StreamConn interface {
@@ -51,19 +53,69 @@ func DialClientWithConfig(ctx context.Context, cfg ClientConfig) (*Client, error
 	if err != nil {
 		return nil, err
 	}
-	transport := &http3.Transport{TLSClientConfig: tlsConfig, QUICConfig: cfg.QUICConfig}
+	transport := &http3.Transport{TLSClientConfig: tlsConfig, QUICConfig: cfg.QUICConfig, EnableDatagrams: cfg.EnableDatagrams}
 	auth, err := NewAuthenticator([][]byte{cfg.AuthKey}, time.Minute, 1)
 	if err != nil {
 		_ = conn.CloseWithError(0, "")
 		return nil, err
 	}
 	return &Client{
-		Conn:       conn,
-		h3:         transport.NewClientConn(conn),
-		transport:  transport,
-		auth:       auth,
-		serverName: cfg.ServerName,
+		Conn:            conn,
+		h3:              transport.NewClientConn(conn),
+		transport:       transport,
+		auth:            auth,
+		serverName:      cfg.ServerName,
+		enableDatagrams: cfg.EnableDatagrams,
+		udpMaxPacket:    cfg.UDPMaxPacketSize,
 	}, nil
+}
+
+func (c *Client) DialUDP(ctx context.Context, addr *chimera.Address) (*UDPConn, error) {
+	if c == nil || c.h3 == nil || !c.enableDatagrams {
+		return nil, errors.New("quicx: HTTP Datagrams are not enabled")
+	}
+	authority, err := authorityFromAddress(addr)
+	if err != nil {
+		return nil, err
+	}
+	authorization, err := c.auth.Sign(http.MethodConnect, authority, c.serverName, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	stream, err := c.h3.OpenRequestStream(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cancelStream := func() {
+		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+	}
+	request := &http.Request{
+		Method: http.MethodConnect,
+		URL:    &url.URL{Scheme: "https", Host: authority},
+		Host:   authority,
+		Header: make(http.Header),
+	}
+	request.Header.Set("Authorization", authorization)
+	request.Header.Set(udpHeaderName, "connect-udp")
+	request.Header.Set(http3.CapsuleProtocolHeader, "?1")
+	request.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	if err := stream.SendRequestHeader(request); err != nil {
+		cancelStream()
+		return nil, err
+	}
+	response, err := stream.ReadResponse()
+	if err != nil {
+		cancelStream()
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		_, _ = io.CopyN(io.Discard, response.Body, 4<<10)
+		_ = response.Body.Close()
+		cancelStream()
+		return nil, fmt.Errorf("quicx: UDP CONNECT rejected with status %d", response.StatusCode)
+	}
+	return newUDPConn(stream, c.Conn.LocalAddr(), c.Conn.RemoteAddr(), udpTargetAddr{authority: authority}, c.udpMaxPacket), nil
 }
 
 func (c *Client) DialTCP(ctx context.Context, addr *chimera.Address) (StreamConn, error) {
@@ -112,8 +164,13 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closeOnce.Do(func() {
+		if c.h3 != nil {
+			c.closeErr = c.h3.CloseWithError(0, "client closed")
+		}
 		if c.transport != nil {
-			c.closeErr = c.transport.Close()
+			if err := c.transport.Close(); err != nil && c.closeErr == nil {
+				c.closeErr = err
+			}
 		}
 		if c.Conn != nil {
 			if err := c.Conn.CloseWithError(0, ""); err != nil && c.closeErr == nil {

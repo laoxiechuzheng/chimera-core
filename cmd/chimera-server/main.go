@@ -23,6 +23,8 @@ import (
 	"github.com/laoxiechuzheng/chimera-core/internal/realserv"
 )
 
+const defaultUDPRelayEnabled = true
+
 func main() {
 	genKey := flag.Bool("genkey", false, "generate REALITY keypair, short ID and QUIC PSK")
 	genPSK := flag.Bool("genpsk", false, "generate an independent 32-byte QUIC PSK")
@@ -41,6 +43,7 @@ func main() {
 	quicCertFile := flag.String("quic-cert-file", "", "CA-signed QUIC certificate file")
 	quicKeyFile := flag.String("quic-key-file", "", "CA-signed QUIC private key file")
 	quicDisable := flag.Bool("no-quic", false, "disable the QUIC listener")
+	udpDisable := flag.Bool("no-udp", false, "disable UDP relay over HTTP/3 datagrams")
 	printFP := flag.Bool("print-quic-fp", false, "print the QUIC certificate fingerprint")
 	flag.Parse()
 
@@ -150,6 +153,7 @@ func main() {
 			CertificateFile: *quicCertFile,
 			PrivateKeyFile:  *quicKeyFile,
 			DecoyTarget:     *target,
+			EnableUDPRelay:  defaultUDPRelayEnabled && !*udpDisable,
 		})
 		if err != nil {
 			log.Fatalf("HTTP/3 listen: %v", err)

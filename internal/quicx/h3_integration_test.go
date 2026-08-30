@@ -214,6 +214,42 @@ func TestAuthenticatedConnectsBypassUnauthenticatedPerIPBurst(t *testing.T) {
 	}
 }
 
+func TestHTTP3ConnectAcceptsAnyConfiguredAuthenticationKey(t *testing.T) {
+	first := bytes.Repeat([]byte{0x61}, authKeyLen)
+	second := bytes.Repeat([]byte{0x62}, authKeyLen)
+	cfg := testServerConfig(t)
+	cfg.AuthKeys = [][]byte{first, second}
+	cfg.Network = NetworkHooks{
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("1.1.1.1")}, nil
+		},
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			clientSide, serverSide := net.Pipe()
+			go func() {
+				defer serverSide.Close()
+				_, _ = io.Copy(serverSide, serverSide)
+			}()
+			return clientSide, nil
+		},
+	}
+	_, info := startTestServerWithConfig(t, cfg)
+	client, err := DialClientWithConfig(context.Background(), ClientConfig{
+		ServerAddr:      info.Addr,
+		ServerName:      "proxy.example",
+		AuthKey:         second,
+		CertFingerprint: info.Fingerprint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	conn, err := client.DialTCP(context.Background(), &chimera.Address{Type: chimera.AtypDomain, Domain: "echo.example", Port: 443})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+}
+
 func startTestServer(t *testing.T) (*Server, ServerInfo) {
 	t.Helper()
 	return startTestServerWithDecoyFetcher(t, func(context.Context, string) (DecoySnapshot, error) {

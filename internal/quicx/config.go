@@ -12,8 +12,9 @@ import (
 )
 
 type NetworkHooks struct {
-	LookupIP    func(context.Context, string) ([]net.IP, error)
-	DialContext func(context.Context, string, string) (net.Conn, error)
+	LookupIP     func(context.Context, string) ([]net.IP, error)
+	DialContext  func(context.Context, string, string) (net.Conn, error)
+	ListenPacket func(context.Context, string, string) (net.PacketConn, error)
 }
 
 type ServerConfig struct {
@@ -34,6 +35,10 @@ type ServerConfig struct {
 	AuthenticationSkew   time.Duration
 	ReplayCapacity       int
 	QUICConfig           *quic.Config
+	EnableUDPRelay       bool
+	UDPMaxPacketSize     int
+	UDPMaxSessions       int
+	UDPIdleTimeout       time.Duration
 }
 
 type ServerInfo struct {
@@ -42,11 +47,13 @@ type ServerInfo struct {
 }
 
 type ClientConfig struct {
-	ServerAddr      string
-	ServerName      string
-	AuthKey         []byte
-	CertFingerprint string
-	QUICConfig      *quic.Config
+	ServerAddr       string
+	ServerName       string
+	AuthKey          []byte
+	CertFingerprint  string
+	EnableDatagrams  bool
+	UDPMaxPacketSize int
+	QUICConfig       *quic.Config
 }
 
 func normalizeServerConfig(cfg ServerConfig) (ServerConfig, error) {
@@ -85,6 +92,17 @@ func normalizeServerConfig(cfg ServerConfig) (ServerConfig, error) {
 	if cfg.ReplayCapacity <= 0 {
 		cfg.ReplayCapacity = 4096
 	}
+	if cfg.EnableUDPRelay {
+		if cfg.UDPMaxPacketSize <= 0 {
+			cfg.UDPMaxPacketSize = defaultUDPMaxPacketSize
+		}
+		if cfg.UDPMaxSessions <= 0 {
+			cfg.UDPMaxSessions = 64
+		}
+		if cfg.UDPIdleTimeout <= 0 {
+			cfg.UDPIdleTimeout = 60 * time.Second
+		}
+	}
 	cfg.Network = normalizeNetworkHooks(cfg.Network, cfg.TargetDialTimeout)
 	if cfg.QUICConfig == nil {
 		cfg.QUICConfig = &quic.Config{
@@ -96,6 +114,9 @@ func normalizeServerConfig(cfg ServerConfig) (ServerConfig, error) {
 		}
 	} else {
 		cfg.QUICConfig = cfg.QUICConfig.Clone()
+	}
+	if cfg.EnableUDPRelay {
+		cfg.QUICConfig.EnableDatagrams = true
 	}
 	return cfg, nil
 }
@@ -115,6 +136,11 @@ func normalizeClientConfig(cfg ClientConfig) (ClientConfig, error) {
 	if strings.TrimSpace(cfg.CertFingerprint) == "" {
 		return ClientConfig{}, errors.New("quicx: certificate fingerprint is required")
 	}
+	if cfg.EnableDatagrams {
+		if cfg.UDPMaxPacketSize <= 0 {
+			cfg.UDPMaxPacketSize = defaultUDPMaxPacketSize
+		}
+	}
 	if cfg.QUICConfig == nil {
 		cfg.QUICConfig = &quic.Config{
 			HandshakeIdleTimeout: 5 * time.Second,
@@ -124,6 +150,9 @@ func normalizeClientConfig(cfg ClientConfig) (ClientConfig, error) {
 		}
 	} else {
 		cfg.QUICConfig = cfg.QUICConfig.Clone()
+	}
+	if cfg.EnableDatagrams {
+		cfg.QUICConfig.EnableDatagrams = true
 	}
 	return cfg, nil
 }
@@ -137,6 +166,11 @@ func normalizeNetworkHooks(hooks NetworkHooks, timeout time.Duration) NetworkHoo
 	if hooks.DialContext == nil {
 		dialer := &net.Dialer{Timeout: timeout}
 		hooks.DialContext = dialer.DialContext
+	}
+	if hooks.ListenPacket == nil {
+		hooks.ListenPacket = func(_ context.Context, network, address string) (net.PacketConn, error) {
+			return net.ListenPacket(network, address)
+		}
 	}
 	return hooks
 }
