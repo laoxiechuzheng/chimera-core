@@ -1,6 +1,25 @@
 package chimera
 
-import "net"
+import (
+	"context"
+	"errors"
+	"net"
+	"net/netip"
+	"strconv"
+	"strings"
+)
+
+var forbiddenPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("2001:db8::/32"),
+}
 
 // IsForbiddenTarget reports whether addr points at a private, loopback, or
 // link-local destination. Servers refuse to dial these to prevent an abused
@@ -20,27 +39,62 @@ func IsForbiddenTarget(addr *Address) bool {
 		return false
 	}
 	for _, ip := range ips {
-		if ip == nil {
-			continue
-		}
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return true
-		}
-		// IPv4-mapped IPv6
-		if v4 := ip.To4(); v4 != nil {
-			if v4.IsLoopback() || v4.IsPrivate() || v4.IsLinkLocalUnicast() || v4.IsUnspecified() {
-				return true
-			}
-		}
-		// Carrier-grade NAT + link-local range 169.254/16 + unique local fc00::/7 for IPv6 text form
-		if v4 := ip.To4(); v4 != nil {
-			if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
-				return true
-			}
-		}
-		if len(ip) == 16 && ip[0] == 0xfc {
+		if IsForbiddenIP(ip) {
 			return true
 		}
 	}
 	return false
+}
+
+func IsForbiddenIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	addr = addr.Unmap()
+	if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsMulticast() || addr.IsUnspecified() {
+		return true
+	}
+	for _, prefix := range forbiddenPrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+type LookupIPFunc func(context.Context, string) ([]net.IP, error)
+
+func ResolveAndValidateAuthority(ctx context.Context, authority string, lookup LookupIPFunc) (string, error) {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(authority))
+	if err != nil || host == "" {
+		return "", errors.New("chimera: invalid target authority")
+	}
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 {
+		return "", errors.New("chimera: invalid target port")
+	}
+	var ips []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		if lookup == nil {
+			lookup = func(ctx context.Context, host string) ([]net.IP, error) {
+				return net.DefaultResolver.LookupIP(ctx, "ip", host)
+			}
+		}
+		ips, err = lookup(ctx, host)
+		if err != nil || len(ips) == 0 {
+			return "", errors.New("chimera: target resolution failed")
+		}
+	}
+	for _, ip := range ips {
+		if IsForbiddenIP(ip) {
+			return "", errors.New("chimera: forbidden target address")
+		}
+	}
+	return net.JoinHostPort(ips[0].String(), strconv.FormatUint(port, 10)), nil
 }

@@ -1,7 +1,7 @@
 name: ci
 on:
   push:
-    branches: [main]
+    branches: [main, "feature/**"]
   pull_request:
   workflow_dispatch:
 
@@ -41,21 +41,17 @@ jobs:
 
   install-test:
     runs-on: ubuntu-latest
-    container: debian:12
     steps:
       - uses: actions/checkout@v4
-      - run: apt-get update -qq && apt-get install -y -qq curl
-      - name: Real bash expansion of unit-writing block
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build installer test server
+        run: go build -trimpath -o /tmp/chimera-server ./cmd/chimera-server
+      - name: Debian 12 installer behavior
         run: |
-          bash -n install.sh
-          set -e
-          export CHIMERA_DIR=/opt/chimera PORT=9443 SNI=www.cloudflare.com PRIV=AAAA PUB=BBBB SID=cccc
-          START=$(grep -n 'cat > /etc/systemd/system/chimera.service' install.sh | cut -d: -f1)
-          END=$(awk -v s="$START" '/^EOF$/ { if (NR > s) { print NR; exit } }' install.sh)
-          sed -n "$START,$END p" install.sh | sed "s|/etc/systemd/system/chimera.service|/tmp/chimera.service|" > /tmp/unit-block.sh
-          bash /tmp/unit-block.sh
-          cat /tmp/chimera.service
-          if grep -q '`' /tmp/chimera.service; then echo 'FAIL: backtick in unit'; exit 1; fi
-          grep -q -- '-key \$PRIV -sid \$SID' /tmp/chimera.service
-          grep -q 'EnvironmentFile=/opt/chimera/keys.env' /tmp/chimera.service
-          echo 'unit file OK'
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            -v "/tmp/chimera-server:/tmp/chimera-server:ro" \
+            debian:12-slim \
+            bash -c 'apt-get update -qq && apt-get install -y -qq curl systemd >/dev/null && bash -n /src/install.sh && CHIMERA_TEST_SERVER=/tmp/chimera-server bash /src/tests/install_test.sh'

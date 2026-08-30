@@ -3,125 +3,162 @@ package main
 import (
 	"context"
 	"crypto/ecdh"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
+	"path"
 	"strings"
 	"time"
 
-	"github.com/chimera-proxy/chimera-core/internal/chimera"
-	"github.com/chimera-proxy/chimera-core/internal/padstream"
-	"github.com/chimera-proxy/chimera-core/internal/quicx"
-	"github.com/chimera-proxy/chimera-core/internal/realserv"
+	"github.com/laoxiechuzheng/chimera-core/internal/chimera"
+	"github.com/laoxiechuzheng/chimera-core/internal/padstream"
+	"github.com/laoxiechuzheng/chimera-core/internal/quicx"
+	"github.com/laoxiechuzheng/chimera-core/internal/realserv"
 )
 
 func main() {
-	genkey := flag.Bool("genkey", false, "generate x25519 keypair and shortId")
-	listen := flag.String("listen", ":443", "listen address")
-	target := flag.String("target", "www.microsoft.com:443", "REALITY target site host:port")
+	genKey := flag.Bool("genkey", false, "generate REALITY keypair, short ID and QUIC PSK")
+	genPSK := flag.Bool("genpsk", false, "generate an independent 32-byte QUIC PSK")
+	quicCertInfo := flag.Bool("quic-cert-info", false, "create/load the QUIC certificate and print its fingerprint")
+	systemdUnit := flag.Bool("systemd-unit", false, "render a hardened systemd unit and exit")
+	installDir := flag.String("install-dir", "/opt/chimera", "installation directory used by -systemd-unit")
+	listen := flag.String("listen", ":443", "TCP listen address")
+	target := flag.String("target", "www.microsoft.com:443", "REALITY and decoy target host:port")
 	sniList := flag.String("sni", "www.microsoft.com", "comma-separated SNI whitelist")
-	privKeyB64 := flag.String("key", "", "x25519 private key (base64 rawurl)")
-	sidList := flag.String("sid", "", "comma-separated short IDs (hex)")
-	show := flag.Bool("show", false, "show debug output")
-	quicListen := flag.String("quic", "", "QUIC listen address (UDP, defaults to same port as -listen). Leave empty to auto-share port with TCP.")
-	quicPass := flag.String("quic-pass", "", "QUIC auth password")
-	quicDisable := flag.Bool("no-quic", false, "disable the QUIC listener entirely (TCP-only mode)")
-	printFP := flag.Bool("print-quic-fp", false, "print the QUIC cert fingerprint at startup (default: log-only)")
+	privKeyB64 := flag.String("key", envFirst("CHIMERA_PRIVATE_KEY", "PRIV"), "x25519 private key (base64url; prefer CHIMERA_PRIVATE_KEY env)")
+	sidList := flag.String("sid", envFirst("CHIMERA_SHORT_IDS", "SID"), "comma-separated short IDs (hex; prefer CHIMERA_SHORT_IDS env)")
+	show := flag.Bool("show", false, "show REALITY debug output")
+	quicListen := flag.String("quic", "", "HTTP/3 QUIC listen address (UDP; defaults to -listen)")
+	quicPSKB64 := flag.String("quic-psk", os.Getenv("CHIMERA_QUIC_PSK"), "independent 32-byte QUIC PSK (base64url; prefer env)")
+	quicCertPath := flag.String("quic-cert", os.Getenv("CHIMERA_QUIC_CERT"), "persisted self-signed QUIC certificate path")
+	quicCertFile := flag.String("quic-cert-file", "", "CA-signed QUIC certificate file")
+	quicKeyFile := flag.String("quic-key-file", "", "CA-signed QUIC private key file")
+	quicDisable := flag.Bool("no-quic", false, "disable the QUIC listener")
+	printFP := flag.Bool("print-quic-fp", false, "print the QUIC certificate fingerprint")
 	flag.Parse()
 
-	if *genkey {
+	if *genPSK {
+		psk, err := generatePSK()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("QUIC PSK:     %s\n", psk)
+		return
+	}
+	if *genKey {
 		priv, pub, err := chimera.GenerateKeyPair()
 		if err != nil {
 			log.Fatal(err)
 		}
 		sid := make([]byte, 8)
-		rand.Read(sid)
+		if _, err := rand.Read(sid); err != nil {
+			log.Fatal(err)
+		}
+		psk, err := generatePSK()
+		if err != nil {
+			log.Fatal(err)
+		}
 		fmt.Printf("Private Key: %s\n", priv)
 		fmt.Printf("Public Key:  %s\n", pub)
 		fmt.Printf("Short ID:    %s\n", hex.EncodeToString(sid))
+		fmt.Printf("QUIC PSK:    %s\n", psk)
 		return
 	}
 
+	serverNames := parseServerNames(*sniList)
+	if len(serverNames) == 0 {
+		log.Fatal("at least one SNI is required")
+	}
+	if *systemdUnit {
+		unit, err := renderSystemdUnit(*installDir, *listen, *target, serverNames[0])
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Print(unit)
+		return
+	}
+	if *quicCertInfo {
+		path := strings.TrimSpace(*quicCertPath)
+		if path == "" {
+			path = "quic-v5-cert.pem"
+		}
+		fingerprint, err := quicx.EnsureCertificate(path, serverNames[0])
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("QUIC Fingerprint: %s\n", fingerprint)
+		return
+	}
 	if *privKeyB64 == "" {
-		log.Fatal("must provide -key (x25519 private key)")
+		log.Fatal("must provide CHIMERA_PRIVATE_KEY or -key")
 	}
 	privKey, err := base64.RawURLEncoding.DecodeString(*privKeyB64)
 	if err != nil || len(privKey) != 32 {
 		log.Fatalf("invalid private key: %v (len=%d)", err, len(privKey))
 	}
-
-	var serverNames []string
-	for _, s := range strings.Split(*sniList, ",") {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			serverNames = append(serverNames, s)
-		}
+	shortIDs, err := parseShortIDs(*sidList)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(shortIDs) == 0 {
+		log.Fatal("at least one short ID is required")
 	}
 
-	var shortIds [][]byte
-	for _, s := range strings.Split(*sidList, ",") {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		b, err := hex.DecodeString(s)
-		if err != nil {
-			log.Fatalf("invalid short ID %q: %v", s, err)
-		}
-		shortIds = append(shortIds, b)
-	}
-
-	cfg := &realserv.ServerConfig{
+	realityConfig := &realserv.ServerConfig{
 		ListenAddr:  *listen,
 		Target:      *target,
 		ServerNames: serverNames,
 		PrivateKey:  privKey,
-		ShortIds:    shortIds,
+		ShortIds:    shortIDs,
 		Show:        *show,
 	}
-
-	listener, err := realserv.Listen(cfg)
+	listener, err := realserv.Listen(realityConfig)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
-	log.Printf("chimera-server listening on %s (SNI: %v, target: %s)", *listen, serverNames, *target)
+	log.Printf("chimera-server TCP/REALITY listening on %s (SNI: %v, target: %s)", *listen, serverNames, *target)
 
 	if !*quicDisable {
-		if *quicListen == "" && *listen != "" {
-			// Auto-share the same host:port for UDP (single-port mode), so a
-			// TCP bind to 127.0.0.1 does not silently expose QUIC on all
-			// interfaces.
+		if *quicListen == "" {
 			*quicListen = *listen
 		}
-		pass := *quicPass
-		var passes []string
-		if pass != "" {
-			passes = []string{pass}
-		} else {
-			// Derive from the PUBLIC key (base64) + each short ID so the client
-			// can compute the identical password from connection info it has.
-			curve := ecdh.X25519()
-			priv, _ := curve.NewPrivateKey(privKey)
-			pubB64 := base64.RawURLEncoding.EncodeToString(priv.PublicKey().Bytes())
-			for _, sid := range shortIds {
-				passes = append(passes, deriveQUICPassword(sid, pubB64))
-			}
-		}
-		_, fp, err := quicx.ListenServer(context.Background(), *quicListen, passes, *target)
+		psk, err := decodePSK(*quicPSKB64)
 		if err != nil {
-			log.Fatalf("quic listen: %v", err)
+			log.Fatal(err)
 		}
-		log.Printf("chimera-server QUIC listening on UDP %s (anti-QoS pipeline active)", *quicListen)
-		log.Printf("chimera-server QUIC cert fingerprint: %s", fp)
+		curve := ecdh.X25519()
+		privateKey, err := curve.NewPrivateKey(privKey)
+		if err != nil {
+			log.Fatalf("invalid x25519 private key: %v", err)
+		}
+		authKeys, err := deriveServerAuthKeys(psk, privateKey.PublicKey().Bytes(), shortIDs)
+		if err != nil {
+			log.Fatal(err)
+		}
+		server, info, err := quicx.ListenServerWithConfig(context.Background(), quicx.ServerConfig{
+			ListenAddr:      *quicListen,
+			ServerName:      serverNames[0],
+			AuthKeys:        authKeys,
+			CertificatePath: *quicCertPath,
+			CertificateFile: *quicCertFile,
+			PrivateKeyFile:  *quicKeyFile,
+			DecoyTarget:     *target,
+		})
+		if err != nil {
+			log.Fatalf("HTTP/3 listen: %v", err)
+		}
+		_ = server
+		log.Printf("chimera-server HTTP/3 CONNECT listening on UDP %s", info.Addr)
+		log.Printf("chimera-server QUIC certificate fingerprint: %s", info.Fingerprint)
 		if *printFP {
-			fmt.Printf("QUIC Fingerprint: %s\n", fp)
+			fmt.Printf("QUIC Fingerprint: %s\n", info.Fingerprint)
 		}
 	}
 
@@ -135,10 +172,8 @@ func main() {
 	}
 }
 
-// handleConn handles an authenticated TCP/REALITY connection.
 func handleConn(conn net.Conn) {
 	defer conn.Close()
-
 	flags, err := chimera.ReadSessionHeader(conn)
 	if err != nil {
 		if err != io.EOF {
@@ -149,10 +184,8 @@ func handleConn(conn net.Conn) {
 	if err := chimera.WriteSessionResponse(conn, chimera.StatusOK); err != nil {
 		return
 	}
-
 	_ = flags
 	pc := padstream.New(conn, padstream.DefaultPolicy())
-
 	cmd, addr, err := chimera.ReadTargetConnect(pc)
 	if err != nil {
 		log.Printf("target connect: %v", err)
@@ -162,64 +195,139 @@ func handleConn(conn net.Conn) {
 		log.Printf("unsupported cmd %d", cmd)
 		return
 	}
-	if chimera.IsForbiddenTarget(addr) {
-		log.Printf("blocked private target: %s", addr)
+	validatedTarget, err := chimera.ResolveAndValidateAuthority(context.Background(), addr.String(), nil)
+	if err != nil {
+		log.Printf("blocked target %s: %v", addr, err)
 		_ = chimera.WriteSessionResponse(pc, chimera.StatusDialError)
 		return
 	}
-
-	// Resolve domains and re-check the resolved IPs against the private
-	// guard, so DNS names cannot bypass the private-network block.
-	var target net.Conn
-	if addr.Type == chimera.AtypDomain {
-		ips, rerr := net.LookupIP(addr.Domain)
-		if rerr != nil {
-			log.Printf("resolve %s: %v", addr.Domain, rerr)
-			_ = chimera.WriteSessionResponse(pc, chimera.StatusDialError)
-			return
-		}
-		blocked := len(ips) > 0
-		for _, ip := range ips {
-			a4 := &chimera.Address{Type: chimera.AtypIPv4, IP: ip, Port: addr.Port}
-			a6 := &chimera.Address{Type: chimera.AtypIPv6, IP: ip, Port: addr.Port}
-			if !chimera.IsForbiddenTarget(a4) && !chimera.IsForbiddenTarget(a6) {
-				blocked = false
-				break
-			}
-		}
-		if blocked {
-			log.Printf("blocked private DNS target: %s", addr)
-			_ = chimera.WriteSessionResponse(pc, chimera.StatusDialError)
-			return
-		}
-	}
 	dialer := net.Dialer{Timeout: 10 * time.Second}
-	target, err = dialer.DialContext(context.Background(), "tcp", addr.String())
+	target, err := dialer.DialContext(context.Background(), "tcp", validatedTarget)
 	if err != nil {
-		log.Printf("dial %s: %v", addr, err)
-		// Tell the client the target dial failed so it can surface an error
-		// instead of hanging. Uses the same v2 result-frame shape as QUIC.
+		log.Printf("dial %s: %v", validatedTarget, err)
 		_ = chimera.WriteSessionResponse(pc, chimera.StatusDialError)
 		return
 	}
 	defer target.Close()
-	log.Printf("connected: %s", addr)
-
-	// v2 protocol: confirm to the client that the target is connected before
-	// streaming. The client now expects this frame after sending CONNECT.
 	if err := chimera.WriteSessionResponse(pc, chimera.StatusOK); err != nil {
 		return
 	}
-
-	chimera.Relay(pc, target)
+	log.Printf("connected: %s", validatedTarget)
+	_ = chimera.Relay(pc, target)
 }
 
-// deriveQUICPassword derives the QUIC auth password from the REALITY short ID
-// and private key material. Both server and clients can compute the same value
-// from credentials they already share, so no second secret needs configuring.
-func deriveQUICPassword(shortID []byte, privKeyB64 string) string {
-	h := hmac.New(sha256.New, []byte("chimera-quic-key-v2"))
-	h.Write(shortID)
-	h.Write([]byte(privKeyB64))
-	return string(h.Sum(nil))
+func generatePSK() (string, error) {
+	psk := make([]byte, 32)
+	if _, err := rand.Read(psk); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(psk), nil
+}
+
+func decodePSK(encoded string) ([]byte, error) {
+	psk, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil || len(psk) != 32 {
+		return nil, errors.New("CHIMERA_QUIC_PSK / -quic-psk must be a base64url-encoded 32-byte secret")
+	}
+	return psk, nil
+}
+
+func deriveServerAuthKeys(psk, publicKey []byte, shortIDs [][]byte) ([][]byte, error) {
+	if len(shortIDs) == 0 {
+		return nil, errors.New("cannot derive QUIC keys without short IDs")
+	}
+	keys := make([][]byte, 0, len(shortIDs))
+	for _, shortID := range shortIDs {
+		key, err := quicx.DeriveAuthKey(psk, publicKey, shortID)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+func parseServerNames(value string) []string {
+	var names []string
+	for _, item := range strings.Split(value, ",") {
+		if name := strings.ToLower(strings.TrimSpace(item)); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func parseShortIDs(value string) ([][]byte, error) {
+	var shortIDs [][]byte
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		shortID, err := hex.DecodeString(item)
+		if err != nil || len(shortID) == 0 || len(shortID) > 8 {
+			return nil, fmt.Errorf("invalid short ID %q", item)
+		}
+		shortIDs = append(shortIDs, shortID)
+	}
+	return shortIDs, nil
+}
+
+func envFirst(names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func renderSystemdUnit(installDir, listen, target, sni string) (string, error) {
+	installDir = strings.TrimSuffix(strings.TrimSpace(installDir), "/")
+	listen = strings.TrimSpace(listen)
+	target = strings.TrimSpace(target)
+	sni = strings.TrimSpace(sni)
+	if !strings.HasPrefix(installDir, "/") || installDir == "/" || strings.ContainsAny(installDir, "\t\r\n '"+"\"") {
+		return "", errors.New("invalid install directory for systemd unit")
+	}
+	for name, value := range map[string]string{"listen": listen, "target": target, "sni": sni} {
+		if value == "" || strings.ContainsAny(value, "\t\r\n '"+"\"") {
+			return "", fmt.Errorf("invalid %s value for systemd unit", name)
+		}
+	}
+	binaryPath := path.Join(installDir, "chimera-server")
+	keysPath := path.Join(installDir, "keys.env")
+	return fmt.Sprintf(`[Unit]
+Description=Chimera Proxy Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=%s
+Environment=CHIMERA_QUIC_CERT=/var/lib/chimera/quic-v5-cert.pem
+ExecStart=%s -listen %s -target %s -sni %s
+DynamicUser=true
+WorkingDirectory=/var/lib/chimera
+StateDirectory=chimera
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
+`, keysPath, binaryPath, listen, target, sni), nil
 }
