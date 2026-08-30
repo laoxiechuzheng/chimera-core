@@ -51,6 +51,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.13"
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: Build clean asset
         env:
           GOOS: ${{ matrix.goos }}
@@ -63,10 +64,35 @@ jobs:
           grep -F "vcs.revision=$GITHUB_SHA" "$RUNNER_TEMP/build-meta.txt"
           grep -F "vcs.modified=false" "$RUNNER_TEMP/build-meta.txt"
           test -z "$(git status --porcelain)"
+      - name: Binary vulnerability scan with exact package-graph allowlist
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: |
+          REPORT="$RUNNER_TEMP/chimera-release/${{ matrix.asset }}-govulncheck.txt"
+          ASSESSMENT="$RUNNER_TEMP/chimera-release/${{ matrix.asset }}-govulncheck-assessment.txt"
+          set +e
+          govulncheck -mode=binary "$RUNNER_TEMP/chimera-release/${{ matrix.asset }}" 2>&1 | tee "$REPORT"
+          SCAN_STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$SCAN_STATUS" -eq 0 ]; then
+            printf 'binary scan: no findings\n' > "$ASSESSMENT"
+          else
+            IDS=$(grep -oE 'GO-[0-9]{4}-[0-9]+' "$REPORT" | sort -u || true)
+            test -n "$IDS" || exit "$SCAN_STATUS"
+            UNEXPECTED=$(printf '%s\n' "$IDS" | grep -v '^GO-2026-5932$' || true)
+            test -z "$UNEXPECTED" || { echo "unexpected advisories: $UNEXPECTED" >&2; exit 1; }
+            if go list -deps "${{ matrix.command }}" | grep -q '^golang.org/x/crypto/openpgp'; then
+              echo 'GO-2026-5932 is reachable in the package graph' >&2
+              exit 1
+            fi
+            printf 'GO-2026-5932 is a binary-mode module finding; golang.org/x/crypto/openpgp is absent from go list -deps for %s.\n' "${{ matrix.command }}" > "$ASSESSMENT"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
-          path: ${{ runner.temp }}/chimera-release/${{ matrix.asset }}
+          path: ${{ runner.temp }}/chimera-release/${{ matrix.asset }}*
           if-no-files-found: error
 
   publish:
@@ -90,6 +116,8 @@ jobs:
           Breaking change: upgrade the server and client together before using QUIC or auto mode. TCP/REALITY remains wire-compatible.
 
           QUIC requires the independent PSK and pinned certificate fingerprint printed by the v0.5 installer. It carries TCP CONNECT streams over UDP/HTTP3 and does not implement UDP ASSOCIATE.
+
+          Release assets include the raw binary govulncheck output and a package-graph assessment. No advisory other than the exact GO-2026-5932 module-only OpenPGP finding is allowed, and that finding is accepted only when OpenPGP is absent from `go list -deps`.
           EOF
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "Chimera $GITHUB_REF_NAME" --notes-file release-notes.md
           gh release upload "$GITHUB_REF_NAME" dist/* --clobber
