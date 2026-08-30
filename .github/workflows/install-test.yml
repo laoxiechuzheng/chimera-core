@@ -13,27 +13,20 @@ jobs:
       - uses: actions/checkout@v4
       - run: apt-get update -qq && apt-get install -y -qq curl
 
-      - name: Syntax check + simulate heredoc expansion of the unit file
+      - name: Syntax check + real bash expansion of the unit-writing block
         run: |
           bash -n install.sh
           set -e
           export CHIMERA_DIR=/opt/chimera PORT=9443 SNI=www.cloudflare.com PRIV=AAAA PUB=BBBB SID=cccc
-          mkdir -p /tmp/unit-test
           START=$(grep -n 'cat > /etc/systemd/system/chimera.service' install.sh | cut -d: -f1)
           END=$(grep -n '^EOF$' install.sh | head -1 | cut -d: -f1)
-          sed -n "$((START+1)),$((END-1))p" install.sh > /tmp/unit-test/raw.txt
-          # Expand $VAR like bash would, but keep $VAR literal (simulating unquoted heredoc)
-          eval "cat <<CHIMERA_EOF
-          $(cat /tmp/unit-test/raw.txt | sed 's/\\$/__ESCAPED__/g')
-          CHIMERA_EOF" > /tmp/unit-test/chimera.service 2>/dev/null || true
-          # Simpler robust approach: use envsubst on unescaped vars only
-          sed 's/\\$/__LIT__/g' /tmp/unit-test/raw.txt > /tmp/unit-test/step1.txt
-          envsubst < /tmp/unit-test/step1.txt > /tmp/unit-test/chimera.service
-          sed -i 's/__LIT__/$/g' /tmp/unit-test/chimera.service
+          # Run the actual heredoc block with real bash - identical to installer behavior
+          sed -n "$START,$END p" install.sh | sed "s|/etc/systemd/system/chimera.service|/tmp/chimera.service|" > /tmp/unit-block.sh
+          bash /tmp/unit-block.sh
           echo '--- generated unit:'
-          cat /tmp/unit-test/chimera.service
+          cat /tmp/chimera.service
           echo '--- checks:'
-          if grep -q '`' /tmp/unit-test/chimera.service; then echo 'FAIL: backtick in unit'; exit 1; fi
-          grep -q -- '-key $PRIV -sid $SID' /tmp/unit-test/chimera.service
-          grep -q 'EnvironmentFile=/opt/chimera/keys.env' /tmp/unit-test/chimera.service
+          if grep -q '`' /tmp/chimera.service; then echo 'FAIL: backtick in unit'; exit 1; fi
+          grep -q -- '-key $PRIV -sid $SID' /tmp/chimera.service
+          grep -q 'EnvironmentFile=/opt/chimera/keys.env' /tmp/chimera.service
           echo 'unit file OK'
