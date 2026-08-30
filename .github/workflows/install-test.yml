@@ -1,0 +1,32 @@
+name: install-test
+on:
+  push:
+    branches: [main]
+    paths: [install.sh, .github/workflows/install-test.yml]
+  workflow_dispatch:
+
+jobs:
+  debian-install:
+    runs-on: ubuntu-latest
+    container: debian:12
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          apt-get update -qq
+          apt-get install -y -qq curl systemd >/dev/null
+      # Host-side check: the generated unit file must contain exactly one
+      # backslash-dollar pair for PRIV and SID and no stray backticks.
+      - name: Inspect generated unit file (no systemd runtime in container)
+        run: |
+          bash -n install.sh
+          # source the heredoc the same way bash would: run only the unit-writing part
+          export CHIMERA_DIR=/opt/chimera PORT=9443 SNI=www.cloudflare.com
+          export PRIV=AAAA PUB=BBBB SID=cccc
+          mkdir -p /tmp/unit-test
+          sed -n '/cat > /etc/systemd/system/chimera.service/,/^EOF$/p' install.sh +            | sed '1d;$d' > /tmp/unit-test/chimera.service
+          grep -n 'ExecStart' /tmp/unit-test/chimera.service
+          if grep -q '`' /tmp/unit-test/chimera.service; then
+            echo "FAIL: backtick found in unit file"; exit 1
+          fi
+          grep -q -- '-key $PRIV -sid $SID' /tmp/unit-test/chimera.service
+          echo "unit file OK"

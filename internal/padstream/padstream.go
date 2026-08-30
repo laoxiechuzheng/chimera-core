@@ -59,13 +59,13 @@ type Conn struct {
 	raw    io.ReadWriteCloser
 	policy Policy
 
-	writeMu     sync.Mutex
-	framesSent  int
-	readBuf     []byte
-	readStage   int // 0=header, 1=padding, 2=payload
+	writeMu        sync.Mutex
+	framesSent     int
+	readBuf        []byte
+	readStage      int // 0=header, 1=padding, 2=payload
 	readPayloadLen uint16
-	readPadLen  uint16
-	readPadSkip int
+	readPadLen     uint16
+	readPadSkip    int
 }
 
 func New(raw io.ReadWriteCloser, p Policy) *Conn {

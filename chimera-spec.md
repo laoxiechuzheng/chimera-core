@@ -75,22 +75,36 @@ All post-handshake data is wrapped in frames:
 QUIC v1 over UDP. Server presents self-signed ECDSA P-256 certificate.
 Client pins server via SHA-256 fingerprint of the leaf certificate.
 
-### Optional Obfuscation (Salamander-style)
+### Authentication (v0.3+)
 
-When enabled, each UDP datagram payload is XOR'd with an AES-CTR keystream
-before QUIC processing. This is length-preserving. The obfuscation key is
-derived from a user-provided password via HKDF-SHA256.
-
-### Authentication
-
-First stream on each QUIC connection sends:
+Each QUIC stream sends one authenticated connect frame:
 
     [0-3]   magic "CHIM"
-    [4]     version
-    [5-12]  nonce (8 random bytes)
-    [13-44] HMAC-SHA256(auth_password, nonce)
+    [4]     version 0x02
+    [5]     cmd (0x01 = connect)
+    [6]     nonce length (8)
+    [7-14]  nonce (8 random bytes)
+    [15-46] HMAC-SHA256(auth_password, nonce)
+    [47..]  target address (same encoding as Mode T Target Connect)
 
-Server verifies HMAC. On failure, connection is closed silently.
+Server verifies HMAC, rejects replayed nonces via a 10-minute replay cache,
+and answers with an 8-byte result frame before relaying. The auth password is
+derived on both sides as HMAC-SHA256("chimera-quic-key-v2", short_id ||
+base64url(public_key)) - no separate QUIC password is configured.
+
+UDP datagram obfuscation (Salamander-style) is NOT implemented in v0.3; it is
+a planned feature. Do not rely on it.
+
+### Dial Confirmation
+
+After the target TCP connection succeeds, the server sends:
+
+    [0-3]   magic "CHIM"
+    [4]     version 0x02
+    [5]     status (0x00 = OK, 0x02 = dial error)
+    [6-7]   reserved
+
+The client only reports success upstream after receiving status 0x00.
 
 ### Target Connect (per QUIC stream)
 

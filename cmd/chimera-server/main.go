@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/ecdh"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"

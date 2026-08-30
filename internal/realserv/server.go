@@ -18,13 +18,13 @@ type ServerConfig struct {
 
 func Listen(config *ServerConfig) (net.Listener, error) {
 	rc := &reality.Config{
-		Show:        config.Show,
-		Type:        "tcp",
-		Dest:        config.Target,
+		Show:                   config.Show,
+		Type:                   "tcp",
+		Dest:                   config.Target,
 		SessionTicketsDisabled: true,
-		ServerNames: make(map[string]bool),
-		PrivateKey:  config.PrivateKey,
-		ShortIds:    make(map[[8]byte]bool),
+		ServerNames:            make(map[string]bool),
+		PrivateKey:             config.PrivateKey,
+		ShortIds:               make(map[[8]byte]bool),
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, network, address)

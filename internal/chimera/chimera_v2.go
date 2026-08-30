@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -154,7 +153,10 @@ func (c *ReplayCache) Add(nonce []byte) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := time.Now()
-	if len(c.seen) > 4096 || len(c.seen) > 0 && now.Sub(c.oldest()) > c.window {
+	// Amortized pruning: do a full sweep only when the map grows past the
+	// high-water mark. Entry lifetime is bounded by the window, so between
+	// sweeps the map holds at most window-rate entries.
+	if len(c.seen) >= replayCacheMax {
 		for k, t := range c.seen {
 			if now.Sub(t) > c.window {
 				delete(c.seen, k)
@@ -169,14 +171,4 @@ func (c *ReplayCache) Add(nonce []byte) bool {
 	return true
 }
 
-func (c *ReplayCache) oldest() time.Time {
-	var oldest time.Time
-	for _, t := range c.seen {
-		if oldest.IsZero() || t.Before(oldest) {
-			oldest = t
-		}
-	}
-	return oldest
-}
-
-var _ = binary.BigEndian // keep import symmetry with chimera.go
+const replayCacheMax = 4096

@@ -95,7 +95,7 @@ After=network.target
 
 [Service]
 EnvironmentFile=$CHIMERA_DIR/keys.env
-ExecStart=$CHIMERA_DIR/chimera-server -listen :$PORT -target $SNI:443 -sni $SNI -key `$PRIV -sid `$SID
+ExecStart=$CHIMERA_DIR/chimera-server -listen :$PORT -target $SNI:443 -sni $SNI -key \$PRIV -sid \$SID
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
