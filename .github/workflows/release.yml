@@ -113,6 +113,7 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           cat > release-notes.md <<'EOF'
           Chimera v0.5 replaces the v0.3/v0.4 raw QUIC carrier with standards-valid HTTP/3 CONNECT.
