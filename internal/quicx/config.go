@@ -11,8 +11,6 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-const compatibilityServerName = "chimera-v05-compat.invalid"
-
 type NetworkHooks struct {
 	LookupIP    func(context.Context, string) ([]net.IP, error)
 	DialContext func(context.Context, string, string) (net.Conn, error)
