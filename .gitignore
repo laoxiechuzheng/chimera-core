@@ -14,3 +14,5 @@ client*-*.txt
 client2-*.txt
 client3-*.txt
 *.log
+v40-server.exe~
+r4-*
