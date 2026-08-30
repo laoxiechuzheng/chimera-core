@@ -4,6 +4,7 @@ chimera-client-v3-*
 chimera-e2e-server.exe
 chimera-server-linux-amd64
 chimera-client-linux-amd64
+v31-*
 smoke-server.exe~
 server-*.txt
 client*-*.txt
