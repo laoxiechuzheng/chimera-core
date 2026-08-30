@@ -1,2 +1,0 @@
-2026/08/30 18:08:14 chimera-client SOCKS5 listening on :11096 -> 127.0.0.1:49443 (SNI: www.cloudflare.com)
-2026/08/30 18:08:17 relay(quic) -> httpbin.org:443

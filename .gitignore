@@ -5,6 +5,9 @@ chimera-e2e-server.exe
 chimera-server-linux-amd64
 chimera-client-linux-amd64
 v31-*
+v40-*
+v4-*.txt
+cmd/probe-test/
 smoke-server.exe~
 server-*.txt
 client*-*.txt

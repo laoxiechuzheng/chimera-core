@@ -1,3 +1,0 @@
-2026/08/30 18:08:11 chimera-server listening on :49443 (SNI: [www.cloudflare.com], target: www.cloudflare.com:443)
-2026/08/30 18:08:11 chimera-server QUIC listening on UDP :49443 (anti-QoS pipeline active)
-2026/08/30 18:08:11 chimera-server QUIC cert fingerprint: 0a38c22c0821415c0a7f6bcbf067bcd39ba25ae5325b2f7040147e5d9330778f
