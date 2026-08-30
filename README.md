@@ -60,12 +60,12 @@ proxies:
     server: YOUR_VPS_IP
     port: 9443
     sni: g.alicdn.com
-    public-key: YOUR_REALITY_PUBLIC_KEY
-    short-id: YOUR_SHORT_ID
+    public-key: "YOUR_REALITY_PUBLIC_KEY"
+    short-id: "YOUR_SHORT_ID"
     client-fingerprint: chrome
     mode: auto                 # tcp | quic | auto
-    quic-psk: YOUR_QUIC_PSK
-    quic-fp: YOUR_QUIC_CERT_SHA256
+    quic-psk: "YOUR_QUIC_PSK"
+    quic-fp: "YOUR_QUIC_CERT_SHA256"
     auto-quic-timeout: 1200    # milliseconds; auto mode only
 ```
 
