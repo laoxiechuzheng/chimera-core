@@ -17,6 +17,8 @@ const (
 	udpFragmentAssemblyTTL   = 2 * time.Second
 )
 
+var errUDPSequenceExhausted = errors.New("quicx: UDP fragment sequence exhausted")
+
 // udpFragmentEncoder turns one UDP packet into one or more HTTP Datagram
 // payloads. The framing is encrypted inside the H3 stream and does not alter
 // the outer QUIC/TLS handshake.
@@ -24,6 +26,7 @@ type udpFragmentEncoder struct {
 	mu        sync.Mutex
 	maxPacket int
 	nextSeq   uint32
+	exhausted bool
 }
 
 func newUDPFragmentEncoder(maxPacket int) *udpFragmentEncoder {
@@ -45,8 +48,16 @@ func (e *udpFragmentEncoder) Encode(packet []byte) ([][]byte, error) {
 		return nil, errors.New("quicx: UDP packet requires too many fragments")
 	}
 	e.mu.Lock()
+	if e.exhausted {
+		e.mu.Unlock()
+		return nil, errUDPSequenceExhausted
+	}
 	sequence := e.nextSeq
-	e.nextSeq++
+	if sequence == ^uint32(0) {
+		e.exhausted = true
+	} else {
+		e.nextSeq++
+	}
 	e.mu.Unlock()
 	frames := make([][]byte, 0, count)
 	for index, offset := 0, 0; offset < len(packet); index, offset = index+1, offset+udpFragmentPayloadSize {

@@ -1,0 +1,42 @@
+name: Chimera Interop
+
+on:
+  push:
+    branches:
+      - "feature/chimera-*"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mihomo_ref:
+        description: Matching Mihomo branch or tag to test
+        required: false
+        default: feature/chimera-v0.6
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  interop:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.head_ref, 'feature/chimera-') ||
+      startsWith(github.ref_name, 'feature/chimera-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: laoxiechuzheng/mihomo
+          ref: ${{ inputs.mihomo_ref || github.head_ref || github.ref_name }}
+          path: mihomo
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+      - name: Run Core to Mihomo UDP target-isolation interop
+        env:
+          CHIMERA_INTEROP: "1"
+          MIHOMO_DIR: ${{ github.workspace }}/mihomo
+        run: go test ./test/interop -run '^TestChimeraV06MihomoUDPTwoDestinationInterop$' -count=1
