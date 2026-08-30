@@ -12,7 +12,7 @@ Non-interactive install with a custom port and SNI:
 Upgrades reuse /opt/chimera/keys.env, so existing client keys remain valid.
 
 Releases: https://github.com/laoxiechuzheng/chimera-core/releases
-Native mihomo kernel: https://github.com/laoxiechuzheng/mihomo/releases/tag/v1.19-chimera.4
+Native mihomo kernel: https://github.com/laoxiechuzheng/mihomo/releases/tag/v1.19-chimera.6
 
 Chimera is a hybrid proxy protocol combining:
 - REALITY handshake (SNI whitelist + borrowed real-site cert, active-probing resistant)
