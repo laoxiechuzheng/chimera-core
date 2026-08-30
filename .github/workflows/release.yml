@@ -1,0 +1,95 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+      - run: test -z "$(git status --porcelain)"
+      - run: go test ./... -count=1
+      - run: go test -race ./... -count=1
+      - run: go vet ./...
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            command: ./cmd/chimera-server
+            asset: chimera-server-linux-amd64
+          - goos: linux
+            command: ./cmd/chimera-client
+            asset: chimera-client-linux-amd64
+          - goos: windows
+            command: ./cmd/chimera-server
+            asset: chimera-server-windows-amd64.exe
+          - goos: windows
+            command: ./cmd/chimera-client
+            asset: chimera-client-windows-amd64.exe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+      - name: Build clean asset
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p "$RUNNER_TEMP/chimera-release"
+          go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/chimera-release/${{ matrix.asset }}" "${{ matrix.command }}"
+          go version -m "$RUNNER_TEMP/chimera-release/${{ matrix.asset }}" | tee "$RUNNER_TEMP/build-meta.txt"
+          grep -F "vcs.revision=$GITHUB_SHA" "$RUNNER_TEMP/build-meta.txt"
+          grep -F "vcs.modified=false" "$RUNNER_TEMP/build-meta.txt"
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ runner.temp }}/chimera-release/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum chimera-* > checksums-sha256.txt
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > release-notes.md <<'EOF'
+          Chimera v0.5 replaces the v0.3/v0.4 raw QUIC carrier with standards-valid HTTP/3 CONNECT.
+
+          Breaking change: upgrade the server and client together before using QUIC or auto mode. TCP/REALITY remains wire-compatible.
+
+          QUIC requires the independent PSK and pinned certificate fingerprint printed by the v0.5 installer. It carries TCP CONNECT streams over UDP/HTTP3 and does not implement UDP ASSOCIATE.
+          EOF
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "Chimera $GITHUB_REF_NAME" --notes-file release-notes.md
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
