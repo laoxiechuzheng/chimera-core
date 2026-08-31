@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,16 +17,19 @@ import (
 )
 
 type Server struct {
-	h3          *http3.Server
-	listener    http3.QUICListener
-	packetConn  net.PacketConn
-	auth        *Authenticator
-	decoy       *Decoy
-	limiter     *Limiter
-	serverName  string
-	network     NetworkHooks
-	dialTimeout time.Duration
-	now         func() time.Time
+	h3             *http3.Server
+	listener       http3.QUICListener
+	packetConn     net.PacketConn
+	auth           *Authenticator
+	decoy          *Decoy
+	limiter        *Limiter
+	udpSlots       chan struct{}
+	udpMaxPacket   int
+	udpIdleTimeout time.Duration
+	serverName     string
+	network        NetworkHooks
+	dialTimeout    time.Duration
+	now            func() time.Time
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -67,24 +71,30 @@ func ListenServerWithConfig(ctx context.Context, cfg ServerConfig) (*Server, Ser
 		return nil, ServerInfo{}, err
 	}
 	server := &Server{
-		listener:    listener,
-		packetConn:  packetConn,
-		auth:        auth,
-		decoy:       decoy,
-		limiter:     NewLimiter(cfg.Limits),
-		serverName:  cfg.ServerName,
-		network:     cfg.Network,
-		dialTimeout: cfg.TargetDialTimeout,
-		now:         time.Now,
-		closed:      make(chan struct{}),
+		listener:       listener,
+		packetConn:     packetConn,
+		auth:           auth,
+		decoy:          decoy,
+		limiter:        NewLimiter(cfg.Limits),
+		udpMaxPacket:   cfg.UDPMaxPacketSize,
+		udpIdleTimeout: cfg.UDPIdleTimeout,
+		serverName:     cfg.ServerName,
+		network:        cfg.Network,
+		dialTimeout:    cfg.TargetDialTimeout,
+		now:            time.Now,
+		closed:         make(chan struct{}),
+	}
+	if cfg.EnableUDPRelay {
+		server.udpSlots = make(chan struct{}, cfg.UDPMaxSessions)
 	}
 	server.h3 = &http3.Server{
-		Addr:           listener.Addr().String(),
-		TLSConfig:      tlsConfig,
-		QUICConfig:     cfg.QUICConfig,
-		Handler:        server,
-		MaxHeaderBytes: 16 << 10,
-		IdleTimeout:    60 * time.Second,
+		Addr:            listener.Addr().String(),
+		TLSConfig:       tlsConfig,
+		QUICConfig:      cfg.QUICConfig,
+		Handler:         server,
+		MaxHeaderBytes:  16 << 10,
+		IdleTimeout:     60 * time.Second,
+		EnableDatagrams: cfg.EnableUDPRelay,
 	}
 	go func() {
 		_ = server.h3.ServeListener(listener)
@@ -146,6 +156,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !authenticated {
 		s.serveUnauthenticated(w, r)
+		return
+	}
+	if strings.EqualFold(r.Header.Get(udpHeaderName), "connect-udp") {
+		s.serveUDPSession(w, r)
 		return
 	}
 	validatedTarget, err := chimera.ResolveAndValidateAuthority(r.Context(), r.Host, s.network.LookupIP)

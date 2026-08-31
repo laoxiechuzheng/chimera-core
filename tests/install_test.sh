@@ -7,6 +7,8 @@ export CHIMERA_INSTALL_LIB_ONLY=1
 # shellcheck source=../install.sh
 . "$ROOT/install.sh"
 
+test "$CHIMERA_VERSION" = "v0.6.0"
+
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

@@ -116,11 +116,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           cat > release-notes.md <<'EOF'
-          Chimera v0.5 replaces the v0.3/v0.4 raw QUIC carrier with standards-valid HTTP/3 CONNECT.
+          Chimera v0.6 keeps the standards-valid HTTP/3 CONNECT carrier and adds authenticated UDP associations over HTTP Datagrams.
 
-          Breaking change: upgrade the server and client together before using QUIC or auto mode. TCP/REALITY remains wire-compatible.
+          Breaking change: UDP requires a matching v0.6 server and Chimera-enabled mihomo core. v0.5 H3 TCP CONNECT and TCP/REALITY remain wire-compatible.
 
-          QUIC requires the independent PSK and pinned certificate fingerprint printed by the v0.5 installer. It carries TCP CONNECT streams over UDP/HTTP3 and does not implement UDP ASSOCIATE.
+          QUIC requires the independent PSK and pinned certificate fingerprint printed by the v0.6 installer. TCP flows use H3 CONNECT; `mode: quic` and `mode: auto` can also carry bounded single-target UDP associations over encrypted H3 Datagrams. TCP/REALITY has no UDP carrier.
 
           Release assets include the raw binary govulncheck output and a package-graph assessment. No advisory other than the exact GO-2026-5932 module-only OpenPGP finding is allowed, and that finding is accepted only when OpenPGP is absent from `go list -deps`.
           EOF

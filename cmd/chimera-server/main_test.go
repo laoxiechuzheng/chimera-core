@@ -21,6 +21,12 @@ func TestGeneratePSKReturnsURLSafe32ByteSecret(t *testing.T) {
 	}
 }
 
+func TestServerEnablesUDPRelayByDefault(t *testing.T) {
+	if !defaultUDPRelayEnabled {
+		t.Fatal("UDP relay is disabled by default")
+	}
+}
+
 func TestRenderSystemdUnitUsesStateDirectoryAndNoSecretArguments(t *testing.T) {
 	unit, err := renderSystemdUnit("/opt/chimera", ":9443", "g.alicdn.com:443", "g.alicdn.com")
 	if err != nil {
